@@ -40,6 +40,30 @@ export async function generateDocent(exhibitionId, artworkId, profile, signal) {
   return response.json();
 }
 
+export async function readSuggestedQuestions(exhibitionId, artworkId, signal) {
+  const path = '/exhibitions/' + encodeURIComponent(exhibitionId) + '/artworks/' + encodeURIComponent(artworkId);
+  const response = await fetch(apiUrl + '/api/visitor' + path + '/suggested-questions', {
+    headers: { Accept: 'application/json' }, signal, cache: 'no-store', credentials: 'omit',
+  });
+  if (!response.ok) throw new Error('추천 질문을 불러오지 못했어요.');
+  return response.json();
+}
+
+export async function generateVisitorSpeech(text, why, signal) {
+  const response = await fetch(apiUrl + '/api/visitor/speech', {
+    method: 'POST', credentials: 'omit', cache: 'no-store', signal,
+    headers: { 'Content-Type': 'application/json', Accept: 'audio/*' },
+    body: JSON.stringify({ text, why }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(typeof error?.detail === 'string' ? error.detail : '음성을 생성하지 못했어요.');
+  }
+  const audio = await response.blob();
+  if (!audio.type.startsWith('audio/')) throw new Error('재생할 수 있는 오디오 응답이 아닙니다.');
+  return audio;
+}
+
 export async function readVisitorCatalog(exhibitionId, artworkId, signal) {
   let path = '/exhibitions';
   if (exhibitionId) path += '/' + encodeURIComponent(exhibitionId);

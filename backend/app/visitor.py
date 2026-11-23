@@ -1,10 +1,10 @@
-﻿from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import quote
 from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 
 from .artwork_questions import ArtworkAnswer, ArtworkQuestion, answer_artwork_question
 from .docent import (
@@ -17,6 +17,8 @@ from .docent_strategy import (
 )
 from .gemini_units import Gemini, logger
 from .schemas import Category
+from .suggested_questions import SuggestedQuestion, generate_suggested_questions
+from .voice import synthesize_speech
 
 
 class ExhibitionSummary(BaseModel):
@@ -97,6 +99,11 @@ class DocentResult(BaseModel):
     debug: DocentDebug | None = None
 
 
+class SpeechRequest(BaseModel):
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=16000)]
+    why: Literal["discover", "relax", "reflect", "together"]
+
+
 def visitor_router(settings):
     router = APIRouter(prefix="/api/visitor", tags=["Visitor"])
 
@@ -157,6 +164,28 @@ def visitor_router(settings):
         return with_image(public_record(await read_catalog(request, response, "visitor_artwork", {
             "exhibition_id": str(exhibition_id), "artwork_id": str(artwork_id),
         })))
+
+    @router.get(
+        "/exhibitions/{exhibition_id}/artworks/{artwork_id}/suggested-questions",
+        response_model=list[SuggestedQuestion],
+    )
+    async def suggested_questions(exhibition_id: UUID, artwork_id: UUID,
+                                  request: Request, response: Response):
+        data = ArtworkDetail.model_validate(await artwork(exhibition_id, artwork_id, request, response))
+        config = settings()
+        gemini = Gemini(request.app.state.http, config.gemini_api_key.get_secret_value())
+        return await generate_suggested_questions(
+            gemini,
+            config.gemini_docent_model or config.gemini_model,
+            data.model_dump(include={"name", "artist", "year"}),
+            data.units,
+        )
+
+    @router.post("/speech", response_class=Response)
+    async def speech(body: SpeechRequest, request: Request):
+        config = settings()
+        audio = await synthesize_speech(request.app.state.http, body.text, body.why, config)
+        return Response(content=audio, media_type="audio/wav")
 
     @router.post(
         "/exhibitions/{exhibition_id}/artworks/{artwork_id}/docent",

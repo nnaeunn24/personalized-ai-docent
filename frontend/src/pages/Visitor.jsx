@@ -1,6 +1,6 @@
-﻿import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { generateDocent, readVisitorCatalog, visitorUrl } from './visitor/visitorApi';
+import { generateDocent, generateVisitorSpeech, readVisitorCatalog, visitorUrl } from './visitor/visitorApi';
 import VisitorSurvey from './visitor/VisitorSurvey';
 import VisitorChat from './visitor/VisitorChat';
 import { firstUnanswered, readVisitorProfile, saveVisitorProfile } from './visitor/visitorProfile';
@@ -202,6 +202,25 @@ function Artwork({ data, profile, nextArtwork }) {
   const metadata = artworkMetadata(data);
   const [result, setResult] = useState({ state: 'loading' });
   const [retry, setRetry] = useState(0);
+  const [audioState, setAudioState] = useState({ state: 'idle', message: '' });
+  const audioCache = useRef(new Map());
+  const activeAudio = useRef(null);
+  const speechRequest = useRef(null);
+
+  function revokeDocentAudio() {
+    speechRequest.current?.abort();
+    speechRequest.current = null;
+    activeAudio.current?.pause();
+    activeAudio.current = null;
+    for (const url of audioCache.current.values()) URL.revokeObjectURL(url);
+    audioCache.current.clear();
+  }
+
+  useEffect(() => {
+    revokeDocentAudio();
+    setAudioState({ state: 'idle', message: '' });
+    return revokeDocentAudio;
+  }, [exhibitionId, artworkId, profile.why, result.state === 'ready' ? result.text : '']);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -229,6 +248,40 @@ function Artwork({ data, profile, nextArtwork }) {
     };
   }, [exhibitionId, artworkId, profile, retry]);
 
+  async function playDocentAudio() {
+    if (result.state !== 'ready' || !result.text || audioState.state === 'loading') return;
+    const key = JSON.stringify([result.text, profile.why]);
+    let url = audioCache.current.get(key);
+    try {
+      if (!url) {
+        setAudioState({ state: 'loading', message: '음성을 만드는 중이에요…' });
+        const controller = new AbortController();
+        speechRequest.current = controller;
+        const blob = await generateVisitorSpeech(result.text, profile.why, controller.signal);
+        if (controller.signal.aborted) return;
+        url = URL.createObjectURL(blob);
+        audioCache.current.set(key, url);
+        speechRequest.current = null;
+      }
+      activeAudio.current?.pause();
+      const audio = new Audio(url);
+      activeAudio.current = audio;
+      setAudioState({ state: 'playing', message: '' });
+      audio.addEventListener('ended', () => {
+        if (activeAudio.current === audio) activeAudio.current = null;
+        setAudioState({ state: 'idle', message: '' });
+      }, { once: true });
+      await audio.play();
+    } catch (error) {
+      if (!speechRequest.current?.signal.aborted) {
+        setAudioState({
+          state: 'failed',
+          message: error instanceof TypeError ? '음성 서버에 연결할 수 없습니다.' : error.message,
+        });
+      }
+    }
+  }
+
   return <div className="visitor-artwork-page">
     <Header title={data.exhibition.name} back={visitorUrl(data.exhibition.id)} artwork search={false} />
     <section className="visitor-artwork">
@@ -236,14 +289,20 @@ function Artwork({ data, profile, nextArtwork }) {
         <Poster className="visitor-artwork-thumbnail" imageUrl={artworkImage(data)} />
         <div><h1>{data.name}</h1>{metadata && <p className="visitor-muted">{metadata}</p>}</div>
       </div>
-      <div className="visitor-audio" aria-label="음성 안내 준비 중">
+      <div className="visitor-audio" aria-label="음성 안내">
         <div className="visitor-audio-timeline"><span>–:–</span><span /><span>–:–</span></div>
         <div className="visitor-audio-controls">
           <button type="button" disabled aria-label="이전"><img src={audioPrevious} alt="" /></button>
-          <button type="button" disabled aria-label="재생"><img className="visitor-audio-play" src={audioPlay} alt="" /></button>
+          <button type="button"
+            disabled={result.state !== 'ready' || !result.text || audioState.state === 'loading'}
+            aria-label={audioState.state === 'playing' ? '음성 재생 중' : '음성 재생'}
+            onClick={playDocentAudio}>
+            <img className="visitor-audio-play" src={audioPlay} alt="" />
+          </button>
           <button type="button" disabled aria-label="다음"><img className="visitor-audio-forward" src={audioPrevious} alt="" /></button>
         </div>
-        <p className="visitor-muted">음성 안내 준비 중</p>
+        {audioState.state === 'loading' && <p role="status" className="visitor-muted">{audioState.message}</p>}
+        {audioState.state === 'failed' && <p role="alert" className="visitor-muted">{audioState.message}</p>}
       </div>
       <section className="visitor-docent" aria-label="개인화 도슨트 설명">
         {result.state === 'loading' && <p role="status">개인화 도슨트 설명을 만드는 중입니다…</p>}
@@ -313,7 +372,7 @@ function VisitorCatalog({ exhibitionId, artworkId, surveyStep, view, profile, on
         <div hidden={showQuestions}>
           <Artwork data={result.data} profile={profile} nextArtwork={index >= 0 ? artworks[index + 1] : null} />
         </div>
-        {showQuestions && <VisitorChat data={result.data} />}
+        {showQuestions && <VisitorChat data={result.data} profile={profile} />}
       </>;
     }
     if (exhibitionId) {

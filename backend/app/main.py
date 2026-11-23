@@ -27,6 +27,7 @@ from .schemas import (
 
 
 logger = logging.getLogger("uvicorn.error")
+SETTINGS_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
 class AiSettingsMigrationRequired(HTTPException):
@@ -35,7 +36,7 @@ class AiSettingsMigrationRequired(HTTPException):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[1] / ".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=SETTINGS_ENV_FILE, extra="ignore")
 
     app_env: Literal["development", "test", "production"] = "production"
     gemini_api_key: SecretStr = SecretStr("")
@@ -58,9 +59,17 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
-@lru_cache
-def settings():
+@lru_cache(maxsize=1)
+def _cached_settings(env_file_mtime_ns: int | None):
     return Settings()
+
+
+def settings():
+    try:
+        env_file_mtime_ns = SETTINGS_ENV_FILE.stat().st_mtime_ns
+    except FileNotFoundError:
+        env_file_mtime_ns = None
+    return _cached_settings(env_file_mtime_ns)
 
 
 @asynccontextmanager
