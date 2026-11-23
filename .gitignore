@@ -1,0 +1,25 @@
+# API Keys
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local docent experiment inputs and reports
+/docent-*.json
+/docent-*-report.md
+
+# Node.js
+node_modules/
+dist/
+.next/
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db

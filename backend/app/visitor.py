@@ -167,6 +167,7 @@ def visitor_router(settings):
         record = await artwork(exhibition_id, artwork_id, request, response)
         data = ArtworkDetail.model_validate(record)
         config = settings()
+        debug_enabled = config.app_env == "development" and config.visitor_docent_debug
         artwork_metadata = data.model_dump(include={"name", "artist", "year"})
         selection = select_units(
             data.units, profile.what, config.visitor_docent_unit_limit, artwork_metadata,
@@ -254,12 +255,12 @@ def visitor_router(settings):
                 raise
             text = result.text
             evidence_insufficient = evidence_insufficient or result.evidence_insufficient
-            if config.visitor_docent_debug and strategy_debug and strategy_debug.status == "applied":
+            if debug_enabled and strategy_debug and strategy_debug.status == "applied":
                 try:
                     strategy_debug.assessment = await assess_docent_strategy(gemini, model_name, input_data, text)
                 except (HTTPException, ValueError) as error:
                     logger.warning("Docent strategy assessment unavailable: %s", type(error).__name__)
-        if config.visitor_docent_debug:
+        if debug_enabled:
             debug = DocentDebug(
                 personalization=profile,
                 selected_units=[SelectedUnit(id=unit.id, category=unit.category)

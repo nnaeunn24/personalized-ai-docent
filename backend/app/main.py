@@ -4,7 +4,7 @@ from hashlib import sha256
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 import httpx
@@ -37,6 +37,7 @@ class AiSettingsMigrationRequired(HTTPException):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[1] / ".env", extra="ignore")
 
+    app_env: Literal["development", "test", "production"] = "production"
     gemini_api_key: SecretStr = SecretStr("")
     gemini_model: str = Field(
         default="gemini-3.5-flash-lite",
@@ -49,7 +50,7 @@ class Settings(BaseSettings):
         UUID(artwork_id) for artwork_id in DEFAULT_DOCENT_REVIEW_ARTWORK_IDS
     ]
     visitor_docent_debug: bool = False
-    visitor_docent_strategy_enabled: bool = False
+    visitor_docent_strategy_enabled: bool = True
     visitor_image_bucket: str = ""
     supabase_url: str = ""
     supabase_publishable_key: SecretStr = SecretStr("")

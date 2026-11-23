@@ -101,9 +101,9 @@ Supabase SQL Editor에서 기존 03과 04가 적용된 상태로 [05_admin_ai_se
 
 게시 Unit이 없거나 작품 ID가 `VISITOR_DOCENT_REVIEW_ARTWORK_IDS`에 포함되면 생성 없이 빈 응답을 반환합니다. 기본 검토 목록에는 작품 정보와 게시 Unit의 출처가 상충하는 〈인테리어〉가 포함됩니다. 검토 완료 후 JSON 배열 설정에서 해당 ID를 제외할 수 있습니다. [해설 작성 프롬프트](app/docent.py)는 선택된 근거를 받아 관찰, 설명, 선택 주제로 이어지는 도슨트를 생성합니다. 근거 구성까지 실행하면 Gemini 요청은 총 두 건입니다. `GEMINI_DOCENT_MODEL`이 비어 있으면 `GEMINI_MODEL`을 사용합니다.
 
-로컬에서 `VISITOR_DOCENT_DEBUG=true`를 설정하면 응답과 Vite 개발 서버 콘솔에 설문, 모델, 생성 텍스트, 선택 방식, 핵심·보조 후보와 연결 유형, 제외 사유, Gemini가 사용했다고 보고한 Unit ID, 문장 수 추정치, 글자 수, 근거 부족 여부가 표시됩니다. 서버는 보고된 ID가 해당 역할의 후보인지 검증합니다. 근거 부족은 핵심 근거 부재 또는 모델 판정으로 표시합니다. 기본값은 `false`입니다.
+개발 환경에서 `APP_ENV=development`와 `VISITOR_DOCENT_DEBUG=true`를 함께 설정하면 응답과 Vite 개발 서버 콘솔에 설문, 모델, 생성 텍스트, 선택 방식, 핵심·보조 후보와 연결 유형, 제외 사유, Gemini가 사용했다고 보고한 Unit ID, 문장 수 추정치, 글자 수, 근거 부족 여부가 표시됩니다. 서버는 보고된 ID가 해당 역할의 후보인지 검증합니다. 근거 부족은 핵심 근거 부재 또는 모델 판정으로 표시합니다. 기본 설정은 `APP_ENV=production`, `VISITOR_DOCENT_DEBUG=false`이며 운영과 테스트 환경에서는 디버그 값을 켜도 노출되지 않습니다.
 
-`VISITOR_DOCENT_STRATEGY_ENABLED=true`로 설정하면 선택이 끝난 Core·Supporting Unit을 고정한 상태에서 필수 개념과 설명 전략을 계획해 해설 요청에 추가합니다. 기본값은 `false`입니다. 새 경로에서는 CONTEXT 원문을 계획 요청에만 사용합니다. CONTEXT의 적절한 연결이 없으면 관찰 행동을 필수로 요구하지 않습니다. 계획이 실패하거나 Core가 없으면 기존 프롬프트로 확인 가능한 자료를 설명합니다.
+`VISITOR_DOCENT_STRATEGY_ENABLED`의 기본값은 `true`입니다. 선택이 끝난 Core·Supporting Unit을 고정한 상태에서 필수 개념과 설명 전략을 계획해 해설 요청에 추가합니다. 기존 경로가 필요하면 `VISITOR_DOCENT_STRATEGY_ENABLED=false`로 설정하세요. 새 경로에서는 CONTEXT 원문을 계획 요청에만 사용합니다. CONTEXT의 적절한 연결이 없으면 관찰 행동을 필수로 요구하지 않습니다. 계획이 실패하거나 Core가 없으면 기존 프롬프트로 확인 가능한 자료를 설명합니다.
 
 전략 플래그와 디버그 설정을 함께 켜면 `debug.strategy_details`에 적용 상태, 필수 개념과 Core ID, 설명 전략과 Unit 참조, 그리고 생성 본문을 대조한 모델 평가가 표시됩니다. 서버는 계획의 인용 구절이 참조한 Unit 원문에 포함되는지 확인합니다. 평가는 개념별 반영 여부, 관찰 행동 실행 여부, 행동의 작품 근거 유무를 구분합니다. `assessment: null`은 평가를 받지 못했다는 뜻이고, 평가 내부의 `observation_action: null`은 필수 관찰 행동이 없었다는 뜻입니다. 전략 계획에는 Gemini 요청 1건이 추가되며, 본문 평가는 디버그에서만 1건을 추가합니다. 평가에 실패해도 응답을 자동 수정 생성하지 않습니다.
 

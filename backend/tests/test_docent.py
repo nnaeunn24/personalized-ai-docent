@@ -67,7 +67,7 @@ class SelectionTest(unittest.TestCase):
 class DocentRouteTest(unittest.IsolatedAsyncioTestCase):
     async def request_docent(self, units, generated=None, *, needs_review=False, what="MEANING", plan=None,
                              how="Basic", strategy_enabled=False, strategy_plan=None, assessment=None,
-                             debug=True, context=""):
+                             debug=True, context="", app_env="development"):
         artwork_id = UUID(DEFAULT_DOCENT_REVIEW_ARTWORK_IDS[0]) if needs_review else UUID(int=21)
         exhibition_id = UUID(int=20)
         provider_requests = []
@@ -97,7 +97,7 @@ class DocentRouteTest(unittest.IsolatedAsyncioTestCase):
         config = SimpleNamespace(
             visitor_docent_unit_limit=6,
             visitor_docent_review_artwork_ids=[UUID(DEFAULT_DOCENT_REVIEW_ARTWORK_IDS[0])],
-            visitor_docent_debug=debug, visitor_docent_strategy_enabled=strategy_enabled,
+            app_env=app_env, visitor_docent_debug=debug, visitor_docent_strategy_enabled=strategy_enabled,
             gemini_docent_model="", gemini_model="test-model",
             gemini_api_key=SecretStr("test"), supabase_url="https://catalog.example",
             supabase_publishable_key=SecretStr("test"),
@@ -129,7 +129,7 @@ class DocentRouteTest(unittest.IsolatedAsyncioTestCase):
             "required_content": [{"core_refs": [1], "concept": "정물과 인물이 함께 등장합니다."}],
         }
 
-    async def test_default_path_retains_legacy_payload_and_no_strategy_debug(self):
+    async def test_disabled_flag_retains_legacy_payload_and_no_strategy_debug(self):
         core = unit(1, "MEANING", "정물과 인물이 함께 등장합니다.")
         generated = json.dumps({"text": "인물과 정물을 함께 살펴보세요.", "used_core_unit_ids": [str(core.id)],
                                 "used_supporting_unit_ids": [], "evidence_insufficient": False})
@@ -140,6 +140,19 @@ class DocentRouteTest(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(json.loads(calls[0].content)["contents"][0]["parts"][0]["text"])
         self.assertEqual(payload["CONTEXT"], "천천히 보고 싶어요.")
         self.assertNotIn("required_content", payload)
+
+    async def test_production_and_test_do_not_expose_debug_or_run_assessment(self):
+        core = unit(1, "MEANING", "정물과 인물이 함께 등장합니다.")
+        answer = "인물과 정물을 함께 살펴보세요."
+        generated = json.dumps({"text": answer, "used_core_unit_ids": [str(core.id)],
+                                "used_supporting_unit_ids": [], "evidence_insufficient": False})
+        for app_env in ("production", "test"):
+            response, calls = await self.request_docent(
+                [core], generated, strategy_enabled=True, strategy_plan=self.strategy_fixture(),
+                debug=True, app_env=app_env,
+            )
+            self.assertEqual(response.json(), {"text": answer})
+            self.assertEqual(len(calls), 2)
 
     async def test_strategy_plan_generation_and_assessment_never_repair(self):
         core = unit(1, "MEANING", "정물과 인물이 함께 등장합니다.")
