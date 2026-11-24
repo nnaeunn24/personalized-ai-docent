@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { generateDocent, generateVisitorSpeech, readVisitorCatalog, visitorUrl } from './visitor/visitorApi';
+import { generateDocent, readSuggestedQuestions, readVisitorCatalog, visitorUrl } from './visitor/visitorApi';
+import { rankSuggestedQuestions } from './visitor/followupQuestions';
 import VisitorSurvey from './visitor/VisitorSurvey';
 import VisitorChat from './visitor/VisitorChat';
 import { firstUnanswered, readVisitorProfile, saveVisitorProfile } from './visitor/visitorProfile';
@@ -11,8 +12,8 @@ import exhibitionSearch from './visitor/exhibition-search.svg';
 import searchBack from './visitor/search-back.svg';
 import fieldSearch from './visitor/field-search.svg';
 import artworkBack from './visitor/artwork-back.svg';
-import audioPrevious from './visitor/audio-previous.svg';
-import audioPlay from './visitor/audio-play.svg';
+import DocentAudio from './visitor/DocentAudio';
+import docentLoading from './visitor/docent-loading.svg';
 import './visitor/visitor.css';
 
 const searchUrl = '/visitor?view=search';
@@ -175,15 +176,21 @@ function Exhibition({ data }) {
     <Header title="전시 안내" back="/visitor" />
     <section className="visitor-exhibition">
       <Poster className="visitor-exhibition-poster" imageUrl={exhibitionImage(data)}>{data.name}</Poster>
-      <h1>{data.name}</h1>
-      {venue && <p className="visitor-muted visitor-exhibition-venue">{venue}</p>}
-      {data.description && <p className="visitor-text">{data.description}</p>}
-      <p className="visitor-muted">작품 {data.artworks.length}점</p>
-      <h2>만나볼 작품</h2>
-      {data.artworks.length ? <ol className="visitor-catalog visitor-exhibition-works" role="list">
-        {data.artworks.map((item) => <CatalogRow key={item.id}
-          title={item.name} subtitle={artworkMetadata(item)} imageUrl={artworkImage(item)} />)}
-      </ol> : <p className="visitor-muted">등록된 작품이 없습니다.</p>}
+      <div className="visitor-exhibition-info">
+        <h1>{data.name}</h1>
+        {venue && <p className="visitor-muted">{venue}</p>}
+      </div>
+      <div className="visitor-exhibition-info">
+        {data.description && <p className="visitor-text">{data.description}</p>}
+        <p className="visitor-muted">작품 {data.artworks.length}점</p>
+      </div>
+      <section className="visitor-exhibition-list" aria-label="만나볼 작품">
+        <h2>만나볼 작품</h2>
+        {data.artworks.length ? <ol className="visitor-catalog visitor-exhibition-works" role="list">
+          {data.artworks.map((item) => <CatalogRow key={item.id}
+            title={item.name} subtitle={artworkMetadata(item)} imageUrl={artworkImage(item)} />)}
+        </ol> : <p className="visitor-muted">등록된 작품이 없습니다.</p>}
+      </section>
     </section>
     <footer className="visitor-exhibition-footer">
       {data.artworks.length
@@ -197,30 +204,12 @@ function artworkMetadata({ year, artist }) {
   return [year, artist].filter(Boolean).join(' · ');
 }
 
-function Artwork({ data, profile, nextArtwork }) {
+function Artwork({ data, profile, nextArtwork, suggestedQuestions, visible }) {
   const { id: artworkId, exhibition: { id: exhibitionId } } = data;
   const metadata = artworkMetadata(data);
+  const questionsUrl = visitorUrl(exhibitionId, artworkId, null, 'questions');
   const [result, setResult] = useState({ state: 'loading' });
   const [retry, setRetry] = useState(0);
-  const [audioState, setAudioState] = useState({ state: 'idle', message: '' });
-  const audioCache = useRef(new Map());
-  const activeAudio = useRef(null);
-  const speechRequest = useRef(null);
-
-  function revokeDocentAudio() {
-    speechRequest.current?.abort();
-    speechRequest.current = null;
-    activeAudio.current?.pause();
-    activeAudio.current = null;
-    for (const url of audioCache.current.values()) URL.revokeObjectURL(url);
-    audioCache.current.clear();
-  }
-
-  useEffect(() => {
-    revokeDocentAudio();
-    setAudioState({ state: 'idle', message: '' });
-    return revokeDocentAudio;
-  }, [exhibitionId, artworkId, profile.why, result.state === 'ready' ? result.text : '']);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -248,64 +237,27 @@ function Artwork({ data, profile, nextArtwork }) {
     };
   }, [exhibitionId, artworkId, profile, retry]);
 
-  async function playDocentAudio() {
-    if (result.state !== 'ready' || !result.text || audioState.state === 'loading') return;
-    const key = JSON.stringify([result.text, profile.why]);
-    let url = audioCache.current.get(key);
-    try {
-      if (!url) {
-        setAudioState({ state: 'loading', message: '음성을 만드는 중이에요…' });
-        const controller = new AbortController();
-        speechRequest.current = controller;
-        const blob = await generateVisitorSpeech(result.text, profile.why, controller.signal);
-        if (controller.signal.aborted) return;
-        url = URL.createObjectURL(blob);
-        audioCache.current.set(key, url);
-        speechRequest.current = null;
-      }
-      activeAudio.current?.pause();
-      const audio = new Audio(url);
-      activeAudio.current = audio;
-      setAudioState({ state: 'playing', message: '' });
-      audio.addEventListener('ended', () => {
-        if (activeAudio.current === audio) activeAudio.current = null;
-        setAudioState({ state: 'idle', message: '' });
-      }, { once: true });
-      await audio.play();
-    } catch (error) {
-      if (!speechRequest.current?.signal.aborted) {
-        setAudioState({
-          state: 'failed',
-          message: error instanceof TypeError ? '음성 서버에 연결할 수 없습니다.' : error.message,
-        });
-      }
-    }
-  }
+  if (result.state === 'loading') return <div className="visitor-docent-loading">
+    <header className="visitor-survey-header">
+      <Link to={visitorUrl(exhibitionId)} className="visitor-icon visitor-survey-back" aria-label="전시 안내로 돌아가기" />
+    </header>
+    <div role="status" className="visitor-docent-loading-copy">
+      <img src={docentLoading} alt="" />
+      <div><h1>나에게 맞는 도슨트를 준비하고 있어요</h1>
+        <p>선택한 답변을 바탕으로<br />작품마다 나에게 맞는 이야기를 들려드릴게요</p></div>
+    </div>
+  </div>;
 
   return <div className="visitor-artwork-page">
     <Header title={data.exhibition.name} back={visitorUrl(data.exhibition.id)} artwork search={false} />
     <section className="visitor-artwork">
       <div className="visitor-artwork-identity">
-        <Poster className="visitor-artwork-thumbnail" imageUrl={artworkImage(data)} />
+        <Poster className="visitor-artwork-image" imageUrl={artworkImage(data)} />
         <div><h1>{data.name}</h1>{metadata && <p className="visitor-muted">{metadata}</p>}</div>
       </div>
-      <div className="visitor-audio" aria-label="음성 안내">
-        <div className="visitor-audio-timeline"><span>–:–</span><span /><span>–:–</span></div>
-        <div className="visitor-audio-controls">
-          <button type="button" disabled aria-label="이전"><img src={audioPrevious} alt="" /></button>
-          <button type="button"
-            disabled={result.state !== 'ready' || !result.text || audioState.state === 'loading'}
-            aria-label={audioState.state === 'playing' ? '음성 재생 중' : '음성 재생'}
-            onClick={playDocentAudio}>
-            <img className="visitor-audio-play" src={audioPlay} alt="" />
-          </button>
-          <button type="button" disabled aria-label="다음"><img className="visitor-audio-forward" src={audioPrevious} alt="" /></button>
-        </div>
-        {audioState.state === 'loading' && <p role="status" className="visitor-muted">{audioState.message}</p>}
-        {audioState.state === 'failed' && <p role="alert" className="visitor-muted">{audioState.message}</p>}
-      </div>
+      {result.state === 'ready' && result.text && <DocentAudio
+        key={JSON.stringify([result.text, profile.why])} text={result.text} why={profile.why} visible={visible} />}
       <section className="visitor-docent" aria-label="개인화 도슨트 설명">
-        {result.state === 'loading' && <p role="status">개인화 도슨트 설명을 만드는 중입니다…</p>}
         {result.state === 'failed' && <>
           <p role="alert">{result.message}</p>
           <button className="visitor-button" type="button" onClick={() => {
@@ -317,9 +269,22 @@ function Artwork({ data, profile, nextArtwork }) {
           ? <p className="visitor-text">{result.text}</p>
           : <p className="visitor-muted">아직 게시된 작품 해설이 없습니다.</p>)}
       </section>
+      <section className="visitor-question-preview" aria-labelledby="visitor-question-preview-title">
+        <div className="visitor-question-preview-heading">
+          <h2 id="visitor-question-preview-title">더 궁금한 점이 있나요?</h2>
+          {suggestedQuestions.length > 0 && <p className="visitor-muted">추천 질문을 선택하거나 직접 질문해 보세요.</p>}
+        </div>
+        <div className="visitor-question-options">
+          {suggestedQuestions.map(({ question, question_id }) => <Link key={question_id} to={questionsUrl}
+            state={{ questionId: question_id }} className="visitor-question-option">
+            <span className="visitor-question-label">{question}</span><span aria-hidden="true">↗</span>
+          </Link>)}
+          <Link to={questionsUrl} state={{ focusComposer: true }} className="visitor-question-option visitor-question-custom">궁금한 점을 직접 입력해 주세요.<span aria-hidden="true">↗</span></Link>
+        </div>
+      </section>
     </section>
     <footer className="visitor-artwork-footer">
-      <Link className="visitor-button visitor-primary" to={visitorUrl(exhibitionId, artworkId, null, 'questions')}>질문하기</Link>
+      <Link className="visitor-button visitor-primary" to={questionsUrl}>질문하기</Link>
       {nextArtwork && <Link className="visitor-button" to={visitorUrl(exhibitionId, nextArtwork.id)}>다음 작품</Link>}
     </footer>
   </div>;
@@ -328,6 +293,34 @@ function Artwork({ data, profile, nextArtwork }) {
 function VisitorCatalog({ exhibitionId, artworkId, surveyStep, view, profile, onProfileChange }) {
   const [result, setResult] = useState({ state: 'loading' });
   const [retry, setRetry] = useState(0);
+  const [savedQuestions, setSavedQuestions] = useState(null);
+  const interest = profile.what;
+  const how = profile.how;
+  const suggestionsReady = savedQuestions?.how === how;
+  const suggestions = suggestionsReady ? rankSuggestedQuestions(savedQuestions.items, interest) : [];
+  useEffect(() => {
+    if (!exhibitionId || !artworkId) return;
+    const controller = new AbortController();
+    let pending = false;
+    function refreshQuestions() {
+      if (pending) return;
+      pending = true;
+      readSuggestedQuestions(exhibitionId, artworkId, how, controller.signal)
+        .then((questions) => {
+          if (!controller.signal.aborted) setSavedQuestions({ how, items: questions });
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setSavedQuestions((current) => current?.how === how ? current : { how, items: [] });
+        })
+        .finally(() => { pending = false; });
+    }
+    refreshQuestions();
+    window.addEventListener('focus', refreshQuestions);
+    return () => {
+      window.removeEventListener('focus', refreshQuestions);
+      controller.abort();
+    };
+  }, [exhibitionId, artworkId, how]);
   const showQuestions = view === 'questions';
 
   useEffect(() => {
@@ -368,11 +361,13 @@ function VisitorCatalog({ exhibitionId, artworkId, surveyStep, view, profile, on
     if (artworkId) {
       const { artworks } = result.exhibition;
       const index = artworks.findIndex(({ id }) => id === result.data.id);
+      const nextArtwork = index >= 0 ? artworks[index + 1] : null;
       return <>
         <div hidden={showQuestions}>
-          <Artwork data={result.data} profile={profile} nextArtwork={index >= 0 ? artworks[index + 1] : null} />
+          <Artwork data={result.data} profile={profile} nextArtwork={nextArtwork} suggestedQuestions={suggestions} visible={!showQuestions} />
         </div>
-        {showQuestions && <VisitorChat data={result.data} profile={profile} />}
+        {showQuestions && <VisitorChat data={result.data} profile={profile} nextArtwork={nextArtwork}
+          suggestedQuestions={suggestions} suggestionsReady={suggestionsReady} />}
       </>;
     }
     if (exhibitionId) {

@@ -4,7 +4,7 @@ from pydantic import Field, StringConstraints, model_validator
 
 from .schemas import RequestBody
 
-PromptKind = Literal["extraction", "classification"]
+PromptKind = Literal["extraction", "classification", "followup"]
 PromptBody = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=12000)]
 PromptVersion = Annotated[int, Field(ge=1)]
 

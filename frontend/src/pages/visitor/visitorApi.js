@@ -40,9 +40,9 @@ export async function generateDocent(exhibitionId, artworkId, profile, signal) {
   return response.json();
 }
 
-export async function readSuggestedQuestions(exhibitionId, artworkId, signal) {
+export async function readSuggestedQuestions(exhibitionId, artworkId, how, signal) {
   const path = '/exhibitions/' + encodeURIComponent(exhibitionId) + '/artworks/' + encodeURIComponent(artworkId);
-  const response = await fetch(apiUrl + '/api/visitor' + path + '/suggested-questions', {
+  const response = await fetch(apiUrl + '/api/visitor' + path + '/suggested-questions?' + new URLSearchParams({ how }), {
     headers: { Accept: 'application/json' }, signal, cache: 'no-store', credentials: 'omit',
   });
   if (!response.ok) throw new Error('추천 질문을 불러오지 못했어요.');

@@ -13,13 +13,14 @@ async function request(path, { token, method = 'GET', body, signal } = {}) {
   if (!apiUrl) throw new AdminApiError(0, 'VITE_ADMIN_API_URL을 설정하세요.');
   const headers = { Accept: 'application/json' };
   if (token) headers.Authorization = 'Bearer ' + token;
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const isFile = body instanceof Blob;
+  if (body !== undefined) headers['Content-Type'] = isFile ? body.type : 'application/json';
 
   let response;
   try {
     response = await fetch(apiUrl + prefix + path, {
       method, headers, signal, cache: 'no-store',
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined || isFile ? body : JSON.stringify(body),
     });
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -42,13 +43,13 @@ const unitStatusCodes = { '검수 대기': 'pending', '검수 완료': 'reviewed
 const dateLabel = (timestamp) => new Date(timestamp).toLocaleDateString('ko-KR');
 const exhibition = (row) => ({
   id: row.id, name: row.name, description: row.description, code: row.code,
-  isPublic: row.is_public, coverObjectKey: row.cover_object_key, updated: dateLabel(row.updated_at),
+  isPublic: row.is_public, coverObjectKey: row.cover_object_key, imageUrl: row.image_url, updated: dateLabel(row.updated_at),
   artworkOrder: row.artwork_order ?? [],
 });
 const artwork = (row) => ({
   id: row.id, exhibitionId: row.exhibition_id, name: row.name, artist: row.artist,
   externalId: row.external_id, description: row.description, source: row.source_url,
-  language: row.language, year: row.year, imageObjectKey: row.image_object_key,
+  language: row.language, year: row.year, imageObjectKey: row.image_object_key, imageUrl: row.image_url,
   createdAt: row.created_at, updated: dateLabel(row.updated_at),
 });
 const unit = (row) => ({
@@ -98,10 +99,26 @@ export const adminApi = {
     request('/ai/prompts/' + idPath(kind), { token, method: 'PUT', body }),
   aiTests: (token, signal) => list('/ai/tests', token, (row) => row, {}, signal),
   runAiTest: (token, body) => request('/ai/tests', { token, method: 'POST', body }),
+  runFollowupTest: (token, body) => request('/ai/followup-tests', { token, method: 'POST', body }),
+
+  listFollowupOverview: (token, signal) => list('/followups', token, (row) => row, {}, signal),
+  getFollowups: (token, artworkId, signal) => request('/artworks/' + idPath(artworkId) + '/followups', { token, signal }),
+  generateFollowups: (token, artworkId, body) =>
+    request('/artworks/' + idPath(artworkId) + '/followups/generate', { token, method: 'POST', body }),
+  reviewFollowups: (token, artworkId, status, questions) =>
+    request('/artworks/' + idPath(artworkId) + '/followups/review', {
+      token, method: 'POST', body: { status, items: Object.fromEntries(questions.map(({ id, updated_at }) => [id, updated_at])) },
+    }),
+  saveFollowup: (token, artworkId, id, body) =>
+    request('/artworks/' + idPath(artworkId) + '/followups/' + idPath(id), { token, method: 'PUT', body }),
+  deleteFollowup: (token, artworkId, question) =>
+    request('/artworks/' + idPath(artworkId) + '/followups/' + idPath(question.id) +
+      '?' + new URLSearchParams({ updated_at: question.updated_at }), { token, method: 'DELETE' }),
 
   listExhibitions: (token, signal) => list('/exhibitions', token, exhibition, {}, signal),
-  saveExhibition: (token, { id, name, description = '' }) =>
-    save('/exhibitions', token, { name, description }, id, exhibition),
+  uploadCatalogImage: (token, file) => request('/catalog-images', { token, method: 'POST', body: file }),
+  saveExhibition: (token, { id, name, description = '', imageKey }) =>
+    save('/exhibitions', token, { name, description, cover_object_key: imageKey }, id, exhibition),
   setExhibitionVisibility: (token, id, isPublic) =>
     request('/exhibitions/' + idPath(id) + '/visibility', {
       token, method: 'PATCH', body: { is_public: isPublic },
@@ -117,7 +134,7 @@ export const adminApi = {
   saveArtwork: (token, values) => save('/artworks', token, {
     exhibition_id: values.exhibitionId, name: values.name, artist: values.artist ?? '',
     external_id: values.externalId, description: values.description ?? '',
-    source_url: values.source, language: values.language ?? '', year: values.year ?? '',
+    source_url: values.source, language: values.language ?? '', year: values.year ?? '', image_object_key: values.imageKey,
   }, values.id, artwork),
   deleteArtwork: (token, id) => request('/artworks/' + idPath(id), { token, method: 'DELETE' }),
 

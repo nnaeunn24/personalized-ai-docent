@@ -109,4 +109,17 @@ Supabase SQL Editor에서 기존 03과 04가 적용된 상태로 [05_admin_ai_se
 
 비교 실험 JSON의 문장별 근거를 점검하려면 `backend`에서 `python -m app.evaluate_docent ../docent-stability-comparison.json ../docent-sentence-audit.json`을 실행합니다. 이 명령은 기록된 답변과 선택 Unit을 동일 Gemini 모델에 보내 의미를 대조하고, 부분 근거·근거 없음·감상 안내와 미사용 Core를 구분합니다. 사용량 제한 등으로 일부 평가가 실패하면 같은 명령에 `--resume`을 붙여 입력이 동일한 성공 결과를 재사용할 수 있습니다. 모델의 평가는 별도 검토 자료이며 관람객 요청에서는 실행되지 않습니다.
 
-전시·작품 이미지를 Supabase에서 제공하려면 해당 환경의 공개 이미지 버킷 이름을 `VISITOR_IMAGE_BUCKET`에 설정하고 기존 `cover_object_key`와 `image_object_key`에 버킷 내부 객체 경로를 사용합니다. 일치하는 Figma 예시 전시와 작품은 번들 이미지를 사용할 수 있습니다.
+전시·작품 이미지는 `VISITOR_IMAGE_BUCKET`에 지정된 Supabase 공개 버킷의 `cover_object_key`와 `image_object_key`를 사용합니다. 관리자 화면에서 JPG 또는 PNG를 업로드하려면 [09_admin_catalog_image_upload.sql](sql/09_admin_catalog_image_upload.sql)을 적용하고 기존 이미지 버킷이 공개 상태인지 확인하세요.
+
+## 후속 질문과 저장 답변
+
+기존 Supabase 프로젝트에 [10_followup_questions.sql](sql/10_followup_questions.sql)을 한 번 적용합니다. 이 마이그레이션은 기존 작품, Unit 및 프롬프트를 보존하며, AI Settings의 05 마이그레이션이 적용되어 있어야 합니다.
+
+[11_visitor_reviewed_followups.sql](sql/11_visitor_reviewed_followups.sql)을 적용하면 공개 전시에서 검수 완료 질문도 조회할 수 있습니다. 두 HOW 답변과 유효한 검수 완료 또는 게시 Unit이 필요하며, 재검수 대상은 제외됩니다. 관리자 페이지의 게시 동작은 그대로 사용할 수 있습니다.
+
+1. 로컬 API와 프론트엔드를 실행한 뒤 `/admin`에 로그인합니다. 작품의 마지막 검수 대기 Unit을 검수하면 서버가 백그라운드에서 질문과 두 HOW 답변을 생성합니다. 작품 상세의 **Follow-up Questions**에서 새로고침하거나 **질문 및 답변 생성**으로 수동 실행할 수 있습니다.
+2. 질문과 근거 Unit, Basic/Advanced 답변을 검수합니다. 질문을 게시하기 전에 연결된 Unit을 게시합니다. 답변이 모두 있고 근거 Unit이 유효한 질문만 검수 및 게시할 수 있습니다. 질문을 편집하거나 근거 Unit을 편집·삭제하면 다시 검수합니다.
+3. 공개 전시의 `/visitor`에서 설문을 진행한 뒤 작품 화면이나 채팅의 추천 질문을 선택합니다. 기존 WHAT 순위를 적용한 질문 중 최대 3개를 보여 주고, 선택한 HOW 답변은 저장된 데이터에서 즉시 표시합니다. 브라우저 Network에서 `GET …/suggested-questions?how=…`는 목록을 읽으며, 추천 질문 클릭 자체는 요청을 보내지 않습니다. 직접 입력한 질문만 기존 `POST …/questions`를 호출합니다.
+4. **AI Settings**에서 후속 질문 프롬프트의 버전을 편집·복원하고 실제 작품의 검수된 Unit을 선택해 테스트할 수 있습니다. 테스트 결과는 화면에 표시되며 작품 질문 풀에 저장되지 않습니다.
+
+질문 풀은 `followup_questions`에 저장합니다. 관리 API는 `/api/admin/artworks/{artwork_id}/followups` 아래의 조회·편집·생성·검수·삭제, `/api/admin/followups`의 대시보드 집계 조회, `/api/admin/ai/followup-tests`의 프롬프트 테스트를 제공합니다. 이전 추천 질문 API는 호출할 때마다 생성했으며 별도의 저장 풀은 없었습니다.

@@ -7,6 +7,9 @@ Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 ShortText = Annotated[str, StringConstraints(max_length=200)]
 Category = Literal["VISUAL", "MEANING", "TECHNIQUE", "BACKGROUND"]
 UnitStatus = Literal["pending", "reviewed", "published"]
+CatalogImageKey = Annotated[str, StringConstraints(
+    pattern=r"^docent-catalog/[a-f0-9-]{36}/[a-f0-9]{64}\.(jpg|png)$"
+)]
 
 
 class RequestBody(BaseModel):
@@ -51,6 +54,7 @@ class PasswordReset(RequestBody):
 class Exhibition(RequestBody):
     name: Name
     description: Annotated[str, StringConstraints(max_length=20000)] = ""
+    cover_object_key: CatalogImageKey | None = None
 
 
 class Visibility(RequestBody):
@@ -66,6 +70,7 @@ class Artwork(RequestBody):
     source_url: Annotated[str, StringConstraints(max_length=2048, pattern=r"^(https?://\S+)?$")] = ""
     language: Literal["", "ko", "en", "other"] = ""
     year: Annotated[str, StringConstraints(max_length=100)] = ""
+    image_object_key: CatalogImageKey | None = None
 
 
 class Unit(RequestBody):

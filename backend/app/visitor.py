@@ -1,5 +1,4 @@
 from typing import Annotated, Literal
-from urllib.parse import quote
 from uuid import UUID
 
 import httpx
@@ -17,8 +16,9 @@ from .docent_strategy import (
 )
 from .gemini_units import Gemini, logger
 from .schemas import Category
-from .suggested_questions import SuggestedQuestion, generate_suggested_questions
+from .followups import HowLevel, VisitorFollowup
 from .voice import synthesize_speech
+from .catalog_images import public_catalog_image
 
 
 class ExhibitionSummary(BaseModel):
@@ -109,7 +109,7 @@ def visitor_router(settings):
 
     async def read_catalog(
         request: Request, response: Response,
-        operation: Literal["visitor_exhibitions", "visitor_exhibition", "visitor_artwork"],
+        operation: Literal["visitor_exhibitions", "visitor_exhibition", "visitor_artwork", "visitor_followup_questions"],
         params: dict[str, str],
     ):
         config = settings()
@@ -124,6 +124,8 @@ def visitor_router(settings):
         except httpx.RequestError:
             raise HTTPException(503, "공개 데이터를 불러올 수 없습니다.") from None
         response.headers["Cache-Control"] = "no-store"
+        if operation == "visitor_followup_questions" and result.status_code == 404:
+            return []
         if not result.is_success:
             raise HTTPException(503, "공개 데이터를 불러올 수 없습니다.")
         if not result.content:
@@ -139,13 +141,7 @@ def visitor_router(settings):
         return record
 
     def with_image(record):
-        key = record.get("image_object_key")
-        config = settings()
-        if key and config.visitor_image_bucket and not any(part in ("", ".", "..") for part in key.split("/")):
-            bucket = quote(config.visitor_image_bucket, safe="")
-            record["image_url"] = (
-                f"{config.supabase_url.rstrip('/')}/storage/v1/object/public/{bucket}/{quote(key, safe='/')}"
-            )
+        record["image_url"] = public_catalog_image(settings(), record.get("image_object_key"))
         return record
 
     @router.get("/exhibitions", response_model=list[ExhibitionSummary])
@@ -167,19 +163,13 @@ def visitor_router(settings):
 
     @router.get(
         "/exhibitions/{exhibition_id}/artworks/{artwork_id}/suggested-questions",
-        response_model=list[SuggestedQuestion],
+        response_model=list[VisitorFollowup],
     )
     async def suggested_questions(exhibition_id: UUID, artwork_id: UUID,
-                                  request: Request, response: Response):
-        data = ArtworkDetail.model_validate(await artwork(exhibition_id, artwork_id, request, response))
-        config = settings()
-        gemini = Gemini(request.app.state.http, config.gemini_api_key.get_secret_value())
-        return await generate_suggested_questions(
-            gemini,
-            config.gemini_docent_model or config.gemini_model,
-            data.model_dump(include={"name", "artist", "year"}),
-            data.units,
-        )
+                                  request: Request, response: Response, how: HowLevel = "Basic"):
+        return await read_catalog(request, response, "visitor_followup_questions", {
+            "exhibition_id": str(exhibition_id), "artwork_id": str(artwork_id), "how_level": how,
+        })
 
     @router.post("/speech", response_class=Response)
     async def speech(body: SpeechRequest, request: Request):

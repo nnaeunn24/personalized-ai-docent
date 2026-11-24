@@ -2,6 +2,7 @@
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { createAdminSession } from './admin/adminSession';
 import AiSettings from './admin/AiSettings';
+import FollowupQuestions from './admin/FollowupQuestions';
 import { visitorUrl } from './visitor/visitorApi';
 import './admin/admin.css';
 
@@ -84,7 +85,7 @@ function Login({ onLogin, error, busy }) {
   </main>;
 }
 
-function ImagePicker({ value, onChange, cover = false, disabled = false }) {
+function ImagePicker({ value, onChange, cover = false, imageUrl }) {
   const [error, setError] = useState('');
   const id = cover ? 'exhibition-image' : 'artwork-image';
   function pick(file) {
@@ -93,39 +94,31 @@ function ImagePicker({ value, onChange, cover = false, disabled = false }) {
       setError('JPG 또는 PNG 이미지를 선택하세요.');
       return;
     }
+    if (file.size > 8 * 1024 * 1024) {
+      setError('8MB 이하의 이미지를 선택하세요.');
+      return;
+    }
     setError('');
     onChange(file);
   }
-  const imageRef = useRef(null);
-  useEffect(() => {
-    if (!value) return;
-    const url = URL.createObjectURL(value);
-    imageRef.current.src = url;
-    return () => URL.revokeObjectURL(url);
-  }, [value]);
-  if (disabled) return <div className="admin-upload">
-    <span className={cover ? "admin-button secondary admin-drop" : "admin-button secondary"} aria-disabled="true">
-      {cover ? "대표 이미지 업로드" : "이미지 업로드"}
-    </span>
-    <small>이미지 업로드는 준비 중입니다.</small>
-  </div>;
   return <div className="admin-upload">
-    {value && <img ref={imageRef} alt={cover ? '전시 대표 이미지 미리보기' : '작품 이미지 미리보기'} />}
+    {(value || imageUrl || !cover) && <RecordImage record={{ image: value, imageUrl }}
+      className={cover ? 'admin-cover-preview' : 'admin-artwork-preview'} />}
     <input className="admin-file" id={id} type="file" accept="image/jpeg,image/png"
       onChange={(event) => { pick(event.target.files[0]); event.target.value = ''; }} />
     <label className={'admin-button secondary' + (cover ? ' admin-drop' : '')} htmlFor={id}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => { event.preventDefault(); pick(event.dataTransfer.files[0]); }}>
-      {cover ? '대표 이미지 업로드' : '이미지 업로드'}
+      {value || imageUrl ? '이미지 변경' : cover ? '대표 이미지 업로드' : '이미지 업로드'}
       {cover && <small>JPG · PNG / 클릭하거나 파일을 끌어놓으세요</small>}
     </label>
     {!cover && <small>JPG · PNG / 원본 비율 유지</small>}
-    {value && <Button tone="ghost" onClick={() => onChange(null)}>이미지 제거</Button>}
+    {value && <Button tone="ghost" onClick={() => onChange(null)}>{imageUrl ? '이미지 변경 취소' : '이미지 제거'}</Button>}
     {error && <Notice error>{error}</Notice>}
   </div>;
 }
 
-function ExhibitionForm({ record, onSave, onClose, preview, busy, error }) {
+function ExhibitionForm({ record, onSave, onClose, busy, error }) {
   const [image, setImage] = useState(record?.image ?? null);
   return <Modal title={record ? '전시 정보 수정' : '신규 전시 등록'} onClose={onClose}>
     <form className="admin-stack" onSubmit={(event) => {
@@ -135,7 +128,7 @@ function ExhibitionForm({ record, onSave, onClose, preview, busy, error }) {
     }}>
       <Field label="전시명"><input name="name" defaultValue={record?.name} placeholder="전시명을 입력하세요" required /></Field>
       <Field label="전시 소개"><textarea name="description" defaultValue={record?.description} placeholder="관람객에게 전시를 소개해 주세요" /></Field>
-      <ImagePicker value={image} onChange={setImage} cover disabled={!preview} />
+      <ImagePicker value={image} onChange={setImage} cover imageUrl={record?.imageUrl} />
         {error && <Notice error>{error}</Notice>}
       <div className="admin-dialog-actions"><Button tone="secondary" onClick={onClose}>취소</Button>
         <Button type="submit" disabled={busy}>{record ? '저장' : '초안으로 만들기'}</Button></div>
@@ -149,21 +142,86 @@ function Heading({ label, title, description, children, className = '' }) {
     {children && <div className="admin-actions">{children}</div>}</div>;
 }
 
-function Dashboard({ exhibitions, artworks, units, onAdd }) {
+function RecordImage({ record, className = '' }) {
+  const preview = useRef(null);
+  const [failedUrl, setFailedUrl] = useState('');
+  useEffect(() => {
+    if (!record.image) return;
+    const url = URL.createObjectURL(record.image);
+    preview.current.src = url;
+    return () => URL.revokeObjectURL(url);
+  }, [record.image]);
+  return <span className={'admin-record-image ' + className} aria-hidden="true">
+    {record.image ? <img ref={preview} alt="" /> : record.imageUrl && record.imageUrl !== failedUrl &&
+      <img src={record.imageUrl} alt="" onError={() => setFailedUrl(record.imageUrl)} />}
+  </span>;
+}
+
+function ExhibitionRows({ exhibitions, artworks, actionLabel }) {
+  const counts = new Map();
+  for (const artwork of artworks) counts.set(artwork.exhibitionId, (counts.get(artwork.exhibitionId) ?? 0) + 1);
+  return <ul className="admin-exhibition-rows">
+    {exhibitions.map((record) => <li key={record.id}>
+      <RecordImage record={record} />
+      <div><strong>{record.name}</strong><small>{[record.code, record.updated].filter(Boolean).join(' · ')}</small></div>
+      <span className={record.isPublic ? 'admin-badge approved' : 'admin-badge'}>{record.isPublic ? '공개' : '비공개'}</span>
+      <span>{counts.get(record.id) ?? 0}점</span>
+      <Button tone="secondary" to={adminUrl('exhibition', { id: record.id })}>{actionLabel}</Button>
+    </li>)}
+  </ul>;
+}
+
+function Dashboard({ exhibitions, artworks, units, onAdd, followups }) {
+  const pending = units.filter((unit) => unit.status === statuses[0]);
+  const reviewed = units.length - pending.length;
+  const progress = units.length ? Math.round(reviewed / units.length * 100) : 0;
+  const artworkById = new Map(artworks.map((artwork) => [artwork.id, artwork]));
+  const recentUnits = [...units].filter((unit) => unit.updatedAt)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 4);
+  const pendingFollowups = followups?.filter((item) => item.review_status === 'pending');
+  const followupArtworkIds = [...new Set(pendingFollowups?.map((item) => item.artwork_id))];
   const metrics = [
-    ['등록된 전시', exhibitions.length, exhibitions.length ? '로컬 미리보기 전시' : '등록된 전시 없음'],
-    ['등록된 작품', artworks.length, artworks.length ? '로컬 미리보기 작품' : '등록된 작품 없음'],
-    ['검수 대기 Unit', units.filter((unit) => unit.status === statuses[0]).length, '관리자 확인이 필요한 Unit'],
-    ['게시된 Unit', units.filter((unit) => unit.status === statuses[2]).length, '도슨트 생성에 사용 가능'],
+    ['전체 전시', exhibitions.length, '공개 ' + exhibitions.filter((record) => record.isPublic).length + '개'],
+    ['등록된 작품', artworks.length, '전시 ' + new Set(artworks.map((record) => record.exhibitionId)).size + '개에 연결'],
+    ['전체 Content Unit', units.length, '게시 ' + units.filter((unit) => unit.status === statuses[2]).length + '개'],
+    ['검수 대기 Content Unit', pending.length, '관리자 확인 필요'],
   ];
   return <>
-    <Heading label="DASHBOARD" title="대시보드"><Button onClick={onAdd}>+ 신규 전시 등록</Button></Heading>
+    <Heading title="대시보드"><Button onClick={onAdd}>+ 신규 전시 등록</Button></Heading>
     <div className="admin-metrics">{metrics.map(([label, value, detail]) => <article key={label} className="admin-card">
       <p>{label}</p><strong>{value}</strong><small>{detail}</small>
     </article>)}</div>
-    <section className="admin-card admin-flush">
-      {exhibitions.length === 0 ? <Empty title="아직 등록된 전시가 없습니다">전시를 만든 다음 작품과 Description을 등록하세요.</Empty>
-        : <Empty title="등록된 전시"><Link to={adminUrl('exhibitions')}>전시 목록 보기</Link></Empty>}
+    <section className="admin-card admin-stack">
+      <div className="admin-section-heading"><h2>전시 현황</h2><Button tone="secondary" to={adminUrl('exhibitions')}>전체 전시 보기</Button></div>
+      {exhibitions.length ? <ExhibitionRows exhibitions={exhibitions.slice(0, 3)} artworks={artworks} actionLabel="전시 관리" />
+        : <p className="admin-muted">아직 등록된 전시가 없습니다.</p>}
+    </section>
+    <section className="admin-card admin-stack">
+      <div className="admin-section-heading"><h2>검수 현황</h2><Button tone="secondary" to={adminUrl('units')}>Content Unit 관리</Button></div>
+      <small>검수 완료 {reviewed}개 · 검수 대기 {pending.length}개</small>
+      <div className="admin-review-progress"><strong>{progress}%</strong><progress value={progress} max={100} aria-label="검수 진행률" /></div>
+      {pending.length > 0 && <div><strong>검수 필요</strong><ul className="admin-dashboard-links">
+        {pending.slice(0, 4).map((unit) => <li key={unit.id}><Link to={adminUrl('unit-review', { id: unit.artworkId })}>
+          {artworkById.get(unit.artworkId)?.name} · {unit.label}
+        </Link></li>)}
+      </ul></div>}
+      {followups && <div className="admin-stack">
+        <hr /><strong>후속 질문 검수</strong>
+        <p>전체 {followups.length}개 · 검수 대기 {pendingFollowups.length}개</p>
+        {followupArtworkIds.length > 0 && <ul className="admin-dashboard-links">
+          {followupArtworkIds.map((id) => <li key={id}><Link to={adminUrl('artwork-edit', { id, panel: 'followups' })}>
+            {artworkById.get(id)?.name ?? '작품 상세'} · {pendingFollowups.filter((row) => row.artwork_id === id).length}개
+          </Link></li>)}
+        </ul>}
+      </div>}
+    </section>
+    <section className="admin-card admin-stack">
+      <h2>최근 작업</h2>
+      {recentUnits.length ? <ul className="admin-dashboard-links">
+        {recentUnits.map((unit) => <li key={unit.id}><Link to={adminUrl('unit-review', { id: unit.artworkId })}>
+          {artworkById.get(unit.artworkId)?.name} · {unit.label}
+        </Link> <Status unit={unit} /></li>)}
+      </ul> : <p className="admin-muted">표시할 최근 검수 작업이 없습니다.</p>}
     </section>
   </>;
 }
@@ -204,7 +262,7 @@ function Listing({ view, exhibitions, artworks, units, onAdd }) {
     : (view === 'exhibitions' ? ['비공개', '공개'] : statuses).map((status) => [status, status]);
   const detail = { exhibitions: 'exhibition', artworks: 'artwork-edit', units: 'unit-review' }[view];
   return <>
-    <Heading label={screens[view][0].toUpperCase()} title={screens[view][1]}>
+    <Heading title={screens[view][1]}>
       {view === 'exhibitions' && <Button onClick={onAdd}>+ 신규 전시 등록</Button>}
       {view === 'artworks' && <Button to={adminUrl('artwork-new')}>+ 작품 등록</Button>}
       {view === 'units' && <Button to={adminUrl('artworks')}>작품 목록 보기</Button>}
@@ -216,20 +274,27 @@ function Listing({ view, exhibitions, artworks, units, onAdd }) {
         {options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
       </select>
     </div>
-    <div className="admin-card admin-flush">
+    {view === 'exhibitions' && rows.length > 0
+      ? <section className="admin-card"><ExhibitionRows exhibitions={rows.map(([id]) => exhibitions.find((record) => record.id === id))}
+        artworks={artworks} actionLabel="상세 보기" /></section>
+      : <div className="admin-card admin-flush admin-table-scroll">
       <table className="admin-table">
-        <thead><tr>{config.columns.map((column) => <th key={column} scope="col">{column}</th>)}</tr></thead>
+        <thead><tr>{config.columns.map((column) => <th key={column} scope="col">{column}</th>)}
+          <th scope="col"><span className="admin-visually-hidden">작업</span></th></tr></thead>
         <tbody>{rows.map(([id, name, ...values]) => <tr key={id}>
-          <td><Link to={adminUrl(detail, { id })}>{name}</Link></td>
+          <td><Link className="admin-table-title" to={adminUrl(detail, { id })}>
+            {view === 'artworks' && <RecordImage record={artworks.find((record) => record.id === id)} />}
+            {name}</Link></td>
           {values.map((value, index) => <td key={config.columns[index + 1]}>{value}</td>)}
+          <td><Link to={adminUrl(detail, { id })}>{view === 'units' ? '검수 열기' : '상세 보기'}</Link></td>
         </tr>)}
-        {!rows.length && <tr><td colSpan={5} className="admin-no-rows">
+        {!rows.length && <tr><td colSpan={6} className="admin-no-rows">
           <Empty title={query || filter ? '검색 결과가 없습니다' : config.empty[0]}>
             {query || filter ? '검색어나 필터를 변경해 주세요.' : config.empty[1]}
           </Empty>
         </td></tr>}</tbody>
       </table>
-    </div>
+    </div>}
     <Notice>{config.note}</Notice>
   </>;
 }
@@ -268,7 +333,10 @@ function ArtworkOrderList({ artworks, onSave }) {
     <ol className="admin-record-list admin-artwork-order">
       {ids.map((id, index) => <li key={id}>
         <div className="admin-artwork-order-row">
-          <Link to={adminUrl('artwork-edit', { id })}>{byId.get(id).name}</Link>
+          <span className="admin-artwork-order-position" aria-hidden="true">{index + 1}</span>
+          <Link className="admin-table-title" to={adminUrl('artwork-edit', { id })}>
+            <RecordImage record={byId.get(id)} />{byId.get(id).name}
+          </Link>
           <div className="admin-artwork-order-controls">
             <Button tone="secondary" aria-label={byId.get(id).name + ' 위로'} disabled={saving || index === 0}
               onClick={() => move(index, -1)}>↑</Button>
@@ -290,7 +358,8 @@ function ExhibitionDetail({ record, artworks, onEdit, onDelete, onPublish, onSav
     || (left.createdAt ?? '').localeCompare(right.createdAt ?? '')
     || left.id.localeCompare(right.id));
   return <>
-    <Heading label="EXHIBITIONS / 상세" title="전시 상세"><Button onClick={onEdit}>전시 정보 수정</Button></Heading>
+    <Heading title={record.name}><Button tone="secondary" to={adminUrl('exhibitions')}>← 전시 목록</Button>
+      <Button onClick={onEdit}>전시 정보 수정</Button></Heading>
     <div className="admin-detail-grid">
       <section className="admin-card admin-stack">
         <div className="admin-section-heading"><h2>전시 작품</h2>
@@ -300,8 +369,8 @@ function ExhibitionDetail({ record, artworks, onEdit, onDelete, onPublish, onSav
           : <p className="admin-muted">등록된 작품이 없습니다. 이 전시에 작품을 추가할 수 있습니다.</p>}
       </section>
       <section className="admin-card admin-stack">
-        <span className={record.isPublic ? "admin-badge approved" : "admin-badge pending"}>{record.isPublic ? "공개" : "비공개"}</span>
-        <h2>전시 정보</h2><strong>{record.name}</strong>
+        <div className="admin-section-heading"><small>{record.updated}</small>
+          <span className={record.isPublic ? "admin-badge approved" : "admin-badge"}>{record.isPublic ? "공개" : "비공개"}</span></div>
         {record.description && <p className="admin-source admin-muted">{record.description}</p>}
         <hr />
         <Field label="전시 코드"><input value={record.code ?? ""} placeholder="전시 코드 없음" readOnly /></Field>
@@ -318,8 +387,8 @@ function ExhibitionDetail({ record, artworks, onEdit, onDelete, onPublish, onSav
 function ArtworkForm({ record, exhibition, exhibitions, onSave, onDelete, preview, extracting, extractionFailed }) {
   const [image, setImage] = useState(record?.image ?? null);
   return <>
-    <Heading className="admin-artwork-heading" label={record ? 'ARTWORKS / 작품 상세' : 'ARTWORKS / 등록'}
-      title={record ? '작품 정보 편집' : '작품 등록'}
+    <Heading className="admin-artwork-heading" label={<Button tone="secondary" to={adminUrl('artworks')}>← 작품 목록</Button>}
+      title={record?.name || '작품 등록'}
       description={record && <>작품 ID · <span className="admin-artwork-id">ART-{record.id.toUpperCase()}</span></>}>
       {record && <Button tone="danger" onClick={onDelete} disabled={extracting}>삭제</Button>}
       <Button type="submit" form="admin-artwork-form" name={preview ? undefined : 'extract'} disabled={extracting}>
@@ -332,9 +401,18 @@ function ArtworkForm({ record, exhibition, exhibitions, onSave, onDelete, previe
       const fields = Object.fromEntries(new FormData(event.currentTarget));
       if (fields.name.trim()) onSave({ ...fields, name: fields.name.trim(), image }, event.nativeEvent.submitter?.name === "extract");
     }}>
-      <section className="admin-card admin-stack">
-        <h2>작품 이미지</h2><ImagePicker value={image} onChange={setImage} disabled={!preview} />
-      </section>
+      <div className="admin-stack">
+        <section className="admin-card admin-stack">
+          <h2>작품 이미지</h2><ImagePicker value={image} onChange={setImage} imageUrl={record?.imageUrl} />
+        </section>
+        {record && <section className="admin-card admin-stack">
+          <h2>작품 관리 정보</h2>
+          <div className="admin-section-heading"><span>연결 전시</span><span>{exhibitions.find(({ id }) => id === record.exhibitionId)?.name ?? '—'}</span></div>
+          <div className="admin-section-heading"><span>Content Unit</span>
+            <Link to={adminUrl('unit-review', { id: record.id })}>검수 열기</Link></div>
+          <small>최근 수정 · {record.updated}</small>
+        </section>}
+      </div>
       <section className="admin-card admin-stack">
         <div className="admin-form-grid">
           <Field label="작품명"><input name="name" defaultValue={record?.name} placeholder="작품명 입력" required /></Field>
@@ -442,7 +520,8 @@ function UnitReview({ artwork, artworks, units, onAdd, onSave, onDelete, onPubli
   }
 
   return <>
-    <Heading label="CONTENT UNITS / 작품별 결과" title="Content Unit 검수">
+    <Heading label={<Button tone="secondary" to={adminUrl('units')}>← Content Units 목록</Button>} title="Content Unit 검수">
+      <Button tone="secondary" to={adminUrl('artwork-edit', { id: artwork.id, panel: 'followups' })}>Follow-up Questions</Button>
       <Button disabled={!units.some((unit) => unit.status === statuses[1])} onClick={onPublish}>검수 완료 Unit 게시</Button>
     </Heading>
     <div className="admin-review-filters">
@@ -458,29 +537,29 @@ function UnitReview({ artwork, artworks, units, onAdd, onSave, onDelete, onPubli
         onClick={() => setCategoryDialog(true)}>{categoryFilter || '전체 카테고리'}</Button>
       <Button tone="secondary" onClick={onAdd}>+ 수동 추가</Button>
     </div>
-    <section className="admin-card admin-review-source" aria-label="원본 Description">
-      <div className="admin-section-heading"><h2>원본 Description</h2>
-        <Button tone="ghost" to={adminUrl('artwork-edit', { id: artwork.id })}>작품 상세로</Button></div>
+    <details className="admin-card admin-review-source">
+      <summary>원본 Description 보기</summary>
       <p className="admin-source">{artwork.description || '저장된 원본 Description이 없습니다.'}</p>
-    </section>
+      <Link to={adminUrl('artwork-edit', { id: artwork.id })}>작품 상세로</Link>
+    </details>
     <div className={'admin-review-grid' + (selected ? ' has-selection' : '')}>
       <section className="admin-card admin-review-list" aria-label="Content Unit 목록">
-        <header><h2>Content Units</h2><small>작품에 연결된 Unit과 WHAT 분류 결과입니다.</small></header>
-        <div className="admin-review-selection">
-          <label>
-            <input type="checkbox" checked={allChecked} disabled={!reviewable.length}
-              ref={(input) => { if (input) input.indeterminate = checked.length > 0 && !allChecked; }}
-              onChange={(event) => setCheckedIds(new Set(event.target.checked ? reviewable.map((unit) => unit.id) : []))} />
-            전체 선택
-          </label>
-          <span aria-live="polite">{checked.length}개 선택</span>
-          <Button disabled={!checked.length} onClick={reviewChecked}>선택 항목 검수 완료</Button>
+        <div className="admin-review-toolbar">
+          <header><h2>Content Units</h2><small>자동 추출된 Unit과 WHAT 분류 결과입니다.</small></header>
+          <div className="admin-review-selection">
+            <Button tone="secondary" disabled={!reviewable.length || allChecked}
+              onClick={() => setCheckedIds(new Set(reviewable.map((unit) => unit.id)))}>전체 선택</Button>
+            <Button tone="secondary" disabled={!checked.length} onClick={() => setCheckedIds(new Set())}>전체 해제</Button>
+            <Button disabled={!checked.length} onClick={reviewChecked}>
+              {checked.length ? `선택한 ${checked.length}개 검수 완료` : '선택한 Unit 검수 완료'}
+            </Button>
+          </div>
         </div>
         {reviewResult && <p className={reviewResult.failed || reviewResult.refreshFailed ? 'admin-notice error' : 'admin-notice'} role="status">
           검수 완료 {reviewResult.reviewed}건 · 실패 {reviewResult.failed}건
           {reviewResult.refreshFailed && ' · 최신 목록을 불러오지 못했습니다.'}
         </p>}
-        {visible.map((unit) => <div key={unit.id} className="admin-review-row">
+        <div className="admin-review-results">{visible.map((unit) => <div key={unit.id} className="admin-review-row">
           <input type="checkbox" aria-label={unit.label + ' 검수 선택'} disabled={unit.status !== statuses[0]}
             checked={unit.status === statuses[0] && checkedIds.has(unit.id)}
             onChange={(event) => {
@@ -497,7 +576,7 @@ function UnitReview({ artwork, artworks, units, onAdd, onSave, onDelete, onPubli
             <span className="admin-section-heading"><strong className="admin-unit-list-code">{unit.label}</strong><Status unit={unit} /></span>
             <span className="admin-source">{unit.content}</span><strong className="admin-category">{unit.category}</strong>
           </button>
-        </div>)}
+        </div>)}</div>
         {!visible.length && <p className="admin-muted">{units.length ? '선택한 조건의 Unit이 없습니다.' : '등록된 Content Unit이 없습니다.'}</p>}
       </section>
       {selected && <UnitEditor key={JSON.stringify(selected)} unit={selected} onSave={onSave} onDelete={onDelete} />}
@@ -615,6 +694,8 @@ function UnitReviewLoader({ call, artwork, onLoad, ...props }) {
 }
 
 function Workspace({ preview = false, call, user, onLogout }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [followups, setFollowups] = useState(null);
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const [exhibitions, setExhibitions] = useState([]);
@@ -637,6 +718,17 @@ function Workspace({ preview = false, call, user, onLogout }) {
   const view = requestedView && requestedView !== 'login' ? requestedView : 'dashboard';
   const id = params.get('id');
   const needsOverview = view === 'dashboard' || view === 'artworks' || view === 'units';
+  const showFollowups = view === 'artwork-edit' && params.get('panel') === 'followups';
+  useEffect(() => {
+    if (preview || view !== 'dashboard') return;
+    const controller = new AbortController();
+    call('listFollowupOverview', controller.signal).then((rows) => {
+      if (!controller.signal.aborted) setFollowups(rows);
+    }).catch(() => {
+      if (!controller.signal.aborted) setFollowups(null);
+    });
+    return () => controller.abort();
+  }, [call, preview, view]);
   const currentReviewUnits = (preview ? units : reviewUnits).filter((unit) => unit.artworkId === id);
   const exhibition = exhibitions.find((record) => record.id === id);
   const artwork = artworks.find((record) => record.id === id);
@@ -701,9 +793,10 @@ function Workspace({ preview = false, call, user, onLogout }) {
 
   function saveExhibition(values) {
     perform(async () => {
+      const imageKey = !preview && values.image ? (await call('uploadCatalogImage', values.image)).key : undefined;
       const record = preview
         ? { ...modal.record, ...values, id: modal.record?.id ?? crypto.randomUUID(), updated: updated() }
-        : await call('saveExhibition', { ...values, id: modal.record?.id });
+        : await call('saveExhibition', { ...values, imageKey, id: modal.record?.id });
       setExhibitions((current) => mergeRecord(current, record));
       navigate(adminUrl('exhibition', { id: record.id }));
     });
@@ -721,9 +814,10 @@ function Workspace({ preview = false, call, user, onLogout }) {
       return;
     }
     perform(async () => {
+      const imageKey = !preview && values.image ? (await call('uploadCatalogImage', values.image)).key : undefined;
       const record = preview
         ? { ...values, id: artwork?.id ?? crypto.randomUUID(), updated: updated() }
-        : await call('saveArtwork', { ...values, id: artwork?.id });
+        : await call('saveArtwork', { ...values, imageKey, id: artwork?.id });
       setArtworks((current) => mergeRecord(current, record));
       navigate(adminUrl('artwork-edit', { id: record.id }));
       if (!extract) return;
@@ -857,18 +951,28 @@ function Workspace({ preview = false, call, user, onLogout }) {
     ? <div className="admin-card admin-stack"><Notice error>{overview.message}</Notice><Button tone="secondary"
       onClick={() => { setOverview({ state: 'loading' }); setOverviewAttempt((value) => value + 1); }}>다시 불러오기</Button></div>
     : <p role="status">Content Unit 요약을 불러오는 중입니다…</p>;
-  else if (view === 'dashboard') content = <Dashboard {...{ exhibitions, artworks, units }} onAdd={addExhibition} />;
+  else if (view === 'dashboard') content = <Dashboard {...{ exhibitions, artworks, units, followups }} onAdd={addExhibition} />;
   else if (Object.hasOwn(listings, view)) content = <Listing key={view} {...{ view, exhibitions, artworks, units }} onAdd={addExhibition} />;
   else if (view === 'exhibition' && exhibition) content = <ExhibitionDetail record={exhibition} preview={preview}
     artworks={artworks.filter((item) => item.exhibitionId === id)}
     onSaveOrder={saveArtworkOrder}
     onEdit={() => open({ kind: 'exhibition', record: exhibition })}
     onDelete={deleteExhibition} onPublish={setVisibility} />;
-  else if (view === 'artwork-new' || (view === 'artwork-edit' && artwork)) content = <ArtworkForm
+  else if (view === 'artwork-edit' && artwork && showFollowups) content = <>
+    <Heading title={artwork.name}><Button tone="secondary" to={adminUrl('artwork-edit', { id })}>← 작품 정보</Button></Heading>
+    {preview ? <Notice>후속 질문을 관리하려면 실제 관리자 화면에서 로그인하세요.</Notice>
+      : <FollowupQuestions key={id} artworkId={id} call={call} Modal={Modal} />}
+  </>;
+  else if (view === 'artwork-new' || (view === 'artwork-edit' && artwork)) content = <>
+    {view === 'artwork-edit' && <div className="admin-actions">
+      <Button tone="secondary" to={adminUrl('artwork-edit', { id, panel: 'followups' })}>Follow-up Questions</Button>
+    </div>}
+    <ArtworkForm
     key={view === 'artwork-edit' ? artwork.id : params.get('exhibition') ?? view} record={view === 'artwork-edit' ? artwork : undefined}
     exhibition={params.get('exhibition')} exhibitions={exhibitions} preview={preview}
     onSave={saveArtwork} onDelete={deleteArtwork}
-    extracting={extracting} extractionFailed={Boolean(artwork && artwork.id === extractionFailedId)} />;
+    extracting={extracting} extractionFailed={Boolean(artwork && artwork.id === extractionFailedId)} />
+  </>;
   else if (view === 'unit-review' && artwork) content = <ReviewPage key={id} {...{ artwork, artworks }}
     {...(!preview && { call, onLoad: setReviewUnits })}
     units={currentReviewUnits}
@@ -884,27 +988,41 @@ function Workspace({ preview = false, call, user, onLogout }) {
     <Button to={adminUrl(Object.hasOwn(screens, section) ? section : 'dashboard')}>목록으로 이동</Button></div>;
 
   const displayName = preview ? '미리보기' : user.display_name;
+  function navigation(onSelect) {
+    return <nav aria-label="관리자 메뉴">{Object.entries(screens).map(([key, [label]]) =>
+      <Link key={key} to={adminUrl(key)} aria-current={key === section ? 'page' : undefined}
+        className={key === section ? 'selected' : undefined} onClick={() => { setError(''); onSelect?.(); }}>{label}</Link>)}</nav>;
+  }
+  const accountAction = preview ? <Button tone="ghost" to="/admin">실제 관리자 화면으로</Button>
+    : <Button tone="ghost" onClick={() => { setMenuOpen(false); perform(onLogout); }}>로그아웃</Button>;
   return <div className="admin admin-workspace" aria-busy={busy}>
     <aside className="admin-sidebar" inert={busy}>
       <div><Brand />
         <div className="admin-workspace-label"><small>CURATOR WORKSPACE</small><strong>{preview ? '로컬 미리보기' : '전시 관리자'}</strong></div>
-        <nav aria-label="관리자 메뉴">{Object.entries(screens).map(([key, [label]]) =>
-          <Link key={key} to={adminUrl(key)} aria-current={key === section ? 'page' : false}
-            className={key === section ? 'selected' : ''} onClick={() => setError('')}>{label}</Link>)}</nav>
+        {navigation()}
       </div>
       <div className="admin-sidebar-footer">
         <div className="admin-account"><span aria-hidden="true">U</span><div><strong>{displayName}</strong><small>{preview ? '로컬 데이터' : '관리자 계정'}</small></div></div>
-        {preview ? <Button tone="ghost" to="/admin">실제 관리자 화면으로</Button>
-          : <Button tone="ghost" onClick={() => perform(onLogout)}>로그아웃</Button>}
+        {accountAction}
       </div>
     </aside>
     <div className="admin-main" inert={busy}>
-      <header className="admin-topbar"><span>워크스페이스 / 전시 콘텐츠 관리</span>
+      <header className="admin-topbar"><span className="admin-breadcrumb">워크스페이스 / 전시 콘텐츠 관리</span>
+        <div className="admin-narrow-nav">
+          <Button tone="secondary" aria-haspopup="dialog" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}>메뉴</Button>
+          <strong>{screens[section]?.[0] ?? 'Dashboard'}</strong>
+        </div>
         {preview && <span>로컬 미리보기 · 새로고침하면 입력 내용이 초기화됩니다</span>}</header>
       <main className="admin-page">{error && !modal && <Notice error>{error}</Notice>}{content}</main>
     </div>
+    {menuOpen && <Modal title="관리자 메뉴" compact onClose={() => setMenuOpen(false)}>
+      <div className="admin-menu-links">{navigation(() => setMenuOpen(false))}
+        {accountAction}
+        <Button tone="ghost" onClick={() => setMenuOpen(false)}>닫기</Button>
+      </div>
+    </Modal>}
     {modal?.kind === 'exhibition' && <ExhibitionForm record={modal.record} onSave={saveExhibition} onClose={close}
-      preview={preview} busy={busy} error={error} />}
+      busy={busy} error={error} />}
     {modal?.kind === 'unit' && <UnitForm onSave={saveUnit} onClose={close} busy={busy} error={error} />}
     {(modal?.kind === 'confirm' || modal?.kind === 'notice') && <Modal title={modal.title} onClose={close}>
       <p className="admin-muted">{modal.message}</p>

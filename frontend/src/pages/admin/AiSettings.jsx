@@ -3,6 +3,7 @@
 const promptKinds = [
   ['extraction', 'Unit Extraction Prompt'],
   ['classification', 'WHAT Classification Prompt'],
+  ['followup', 'Follow-up Question & Answer Generation Prompt'],
 ];
 const showVersion = (version) => version == null ? '미저장 초안' : 'v' + version;
 const describeRun = (run) => new Date(run.created_at).toLocaleString('ko-KR')
@@ -63,6 +64,92 @@ function RunResult({ run }) {
   </div>;
 }
 
+function FollowupPromptTest({ call, artworks, draft }) {
+  const [artworkId, setArtworkId] = useState('');
+  const [result, setResult] = useState(null);
+  const [sources, setSources] = useState(null);
+  const [selected, setSelected] = useState(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const units = sources?.artworkId === artworkId ? sources.units : [];
+  useEffect(() => {
+    if (!artworkId) return;
+    const controller = new AbortController();
+    call('getFollowups', artworkId, controller.signal).then((data) => {
+      if (controller.signal.aborted) return;
+      const eligible = data.units.filter((unit) => unit.status !== 'pending');
+      setSources({ artworkId, units: eligible });
+      setSelected(new Set(eligible.map((unit) => unit.id)));
+    }).catch((failure) => {
+      if (!controller.signal.aborted) setError(failure.message);
+    });
+    return () => controller.abort();
+  }, [artworkId, call]);
+
+  async function run(event) {
+    event.preventDefault();
+    const unitIds = units.filter(({ id }) => selected.has(id)).map(({ id }) => id);
+    if (busy || !unitIds.length) return;
+    setBusy(true);
+    setError('');
+    setResult(null);
+    try {
+      setResult(await call('runFollowupTest', {
+        artwork_id: artworkId, unit_ids: unitIds, body: draft.body, version: draft.version,
+      }));
+    } catch (failure) {
+      setError(failure.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <section className="admin-card admin-stack">
+    <h2>후속 질문 및 답변 프롬프트 테스트</h2>
+    <small>현재 편집기의 프롬프트로 실행합니다. 결과는 작품의 질문 목록에 저장되지 않습니다.</small>
+    <form className="admin-stack" onSubmit={run}>
+      <label className="admin-field">작품 선택<select value={artworkId} disabled={busy} onChange={(event) => {
+        setArtworkId(event.target.value);
+        setError('');
+        setResult(null);
+      }}>
+        <option value="">작품을 선택하세요</option>
+        {artworks.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+      </select></label>
+      {artworkId && sources?.artworkId === artworkId && (!units.length ? <p>검수된 Content Unit이 없습니다.</p> :
+        <fieldset className="admin-followup-evidence">
+          <legend>테스트에 사용할 Content Unit</legend>
+          {units.map((unit) => <label key={unit.id}>
+            <input type="checkbox" disabled={busy} checked={selected.has(unit.id)} onChange={(event) => {
+              const next = new Set(selected);
+              if (event.target.checked) next.add(unit.id);
+              else next.delete(unit.id);
+              setSelected(next);
+            }} /><span>UNIT-{unit.number} · {unit.category}<br />{unit.content}</span>
+          </label>)}
+        </fieldset>)}
+      <div className="admin-actions"><button className="admin-button" type="submit"
+        disabled={busy || !units.length || !selected.size || !draft.body.trim()}>{busy ? '테스트 실행 중…' : '테스트 실행'}</button></div>
+    </form>
+    {error && <p className="admin-notice error" role="alert">{error}</p>}
+    {result && <div className="admin-stack">
+      <p><strong>{result.artwork.name}</strong> · {showVersion(result.version)} · {result.model}</p>
+      <details><summary>사용한 Content Unit {result.units.length}개</summary>
+        <ul className="admin-record-list">{result.units.map((unit) => <li key={unit.id}>UNIT-{unit.number} · {unit.content}</li>)}</ul>
+      </details>
+      {!result.questions.length && <p>선택한 근거로 생성된 질문이 없습니다.</p>}
+      {result.questions.map((item) => <article className="admin-card admin-stack compact" key={item.question}>
+        <h2>{item.question}</h2>
+        <small>{item.category} · 우선순위 {item.priority} · {item.related_unit_ids.map((id) =>
+          'UNIT-' + result.units.find((unit) => unit.id === id)?.number).join(', ')}</small>
+        <div className="admin-form-grid">
+          {['Basic', 'Advanced'].map((level) => <div key={level}><strong>{level}</strong><p className="admin-source">{item.answers_by_how[level]}</p></div>)}
+        </div>
+      </article>)}
+    </div>}
+  </section>;
+}
+
 export default function AiSettings({ call, artworks }) {
   const [active, setActive] = useState(null);
   const [drafts, setDrafts] = useState(null);
@@ -84,12 +171,13 @@ export default function AiSettings({ call, artworks }) {
       call('activeAiPrompts', signal),
       call('aiPromptVersions', 'extraction', signal),
       call('aiPromptVersions', 'classification', signal),
+      call('aiPromptVersions', 'followup', signal),
       call('aiTests', signal),
-    ]).then(([prompts, extraction, classification, history]) => {
+    ]).then(([prompts, extraction, classification, followup, history]) => {
       if (signal.aborted) return;
       setActive(prompts.active);
       setDrafts(prompts.active);
-      setVersions({ extraction, classification });
+      setVersions({ extraction, classification, followup });
       setRuns(history);
       setLeftId(history[1]?.id ?? '');
       setRightId(history[0]?.id ?? '');
@@ -145,7 +233,7 @@ export default function AiSettings({ call, artworks }) {
   const left = runs.find((run) => run.id === leftId);
   const right = runs.find((run) => run.id === rightId);
   return <>
-    <div className="admin-heading"><div><small>AI SETTINGS</small><h1>AI Settings</h1></div>
+    <div className="admin-heading"><div><h1>AI Settings</h1></div>
       {active && <button className="admin-button secondary" type="button" disabled={Boolean(busy)}
         onClick={() => { setActive(null); setError(''); setReload((value) => value + 1); }}>저장된 설정 다시 불러오기</button>}
     </div>
@@ -154,13 +242,15 @@ export default function AiSettings({ call, artworks }) {
       setError(''); setReload((value) => value + 1);
     }}>다시 불러오기</button> : <p role="status">AI 설정을 불러오는 중입니다…</p> : <>
       {busy && <p className="admin-notice" role="status">{busy}</p>}
-      <div className="admin-form-grid">
-        {promptKinds.map(([kind, title]) => <PromptEditor key={kind} {...{ kind, title }}
+      <div className="admin-form-grid admin-ai-prompts">
+        {promptKinds.filter(([kind]) => active[kind]).map(([kind, title]) => <PromptEditor key={kind} {...{ kind, title }}
           active={active[kind]} versions={versions[kind]} draft={drafts[kind]} busy={Boolean(busy)}
           onDraft={updateDraft}
           onSave={() => updatePrompt(kind, { body: drafts[kind].body }, drafts[kind].body.trim())}
           onRestore={(_, version) => setRestore({ kind, version })} />)}
       </div>
+      {drafts.followup ? <FollowupPromptTest call={call} artworks={artworks} draft={drafts.followup} />
+        : <p className="admin-notice">후속 질문 설정을 사용하려면 Supabase에 10_followup_questions.sql을 적용해 주세요.</p>}
       {restore && <div className="admin-card admin-stack">
         <p>선택한 v{restore.version.version}을 활성 버전으로 복원할까요?</p>
         <div className="admin-actions">
@@ -171,6 +261,7 @@ export default function AiSettings({ call, artworks }) {
       </div>}
       <form className="admin-card admin-stack" onSubmit={runTest}>
         <h2>프롬프트 테스트</h2>
+        <small>테스트 결과는 실제 작품과 Unit에 반영되지 않습니다.</small>
         {artworks.some((artwork) => artwork.description?.trim()) && <label className="admin-field">
           <span>기존 작품 Description 불러오기</span>
           <select value="" disabled={Boolean(busy)} onChange={(event) => {

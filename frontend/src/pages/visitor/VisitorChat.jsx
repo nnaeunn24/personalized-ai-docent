@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { askArtworkQuestion, generateVisitorSpeech, readSuggestedQuestions, visitorUrl } from './visitorApi';
-import { rankSuggestedQuestions } from './followupQuestions';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { askArtworkQuestion, visitorUrl } from './visitorApi';
+import { artworkImage } from './visitorImages';
 import chatBack from './chat-back.svg';
 import chatSubmit from './chat-submit.svg';
+import chatLoading from './chat-loading.svg';
 
 const inMemoryHistory = new Map();
 
@@ -18,44 +19,37 @@ function readHistory(key) {
   return [];
 }
 
-export default function VisitorChat({ data, profile }) {
+export default function VisitorChat({ data, profile, nextArtwork, suggestedQuestions, suggestionsReady }) {
   const { id: artworkId, name, exhibition } = data;
+  const location = useLocation();
+  const navigate = useNavigate();
+  const selectedQuestionId = location.state?.questionId;
+  const focusComposer = location.state?.focusComposer;
   const storageKey = 'docent.visitor.chat.' + JSON.stringify([exhibition.id, artworkId]);
   const [turns, setTurns] = useState(() => readHistory(storageKey));
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
-  const [suggested, setSuggested] = useState({ state: 'loading', questions: [] });
-  const [answerAudio, setAnswerAudio] = useState({});
   const activeRequest = useRef(null);
-  const answerAudioCache = useRef(new Map());
-  const activeAnswerAudio = useRef(null);
   const viewport = useRef(null);
+  const composer = useRef(null);
   const composing = useRef(false);
   const failedQuestion = turns.at(-1)?.answer === null ? turns.at(-1).question : '';
+  const savedAnswerSeen = (id) => turns.some((turn) => turn.questionId === id && turn.how === profile.how);
+  const sendSelectedQuestion = useEffectEvent((id) => {
+    showSavedAnswer(id);
+    navigate(location.pathname + location.search, { replace: true, state: null });
+  });
 
   useEffect(() => () => activeRequest.current?.abort(), []);
   useEffect(() => {
-    const controller = new AbortController();
-    setSuggested({ state: 'loading', questions: [] });
-    readSuggestedQuestions(exhibition.id, artworkId, controller.signal)
-      .then((questions) => {
-        if (!controller.signal.aborted) setSuggested({
-          state: 'ready',
-          questions: rankSuggestedQuestions(questions, profile.what, 4),
-        });
-      })
-      .catch((failure) => {
-        if (!controller.signal.aborted) setSuggested({ state: 'failed', questions: [] });
-      });
-    return () => controller.abort();
-  }, [exhibition.id, artworkId, profile.what]);
-  useEffect(() => () => {
-    activeAnswerAudio.current?.pause();
-    for (const url of answerAudioCache.current.values()) URL.revokeObjectURL(url);
-  }, [exhibition.id, artworkId, profile.why]);
+    if (focusComposer) composer.current?.focus();
+    if (!suggestionsReady || typeof selectedQuestionId !== 'string') return;
+    const timer = window.setTimeout(() => sendSelectedQuestion(selectedQuestionId), 0);
+    return () => window.clearTimeout(timer);
+  }, [focusComposer, selectedQuestionId, suggestionsReady]);
   useEffect(() => {
-    viewport.current.scrollTop = viewport.current.scrollHeight;
+    if (turns.length) viewport.current.scrollTop = viewport.current.scrollHeight;
   }, [turns, pending, error]);
 
   function saveTurns(updated) {
@@ -68,6 +62,16 @@ export default function VisitorChat({ data, profile }) {
     }
   }
 
+  function showSavedAnswer(questionId) {
+    if (activeRequest.current || savedAnswerSeen(questionId)) return;
+    const saved = suggestedQuestions.find((item) => item.question_id === questionId);
+    if (!saved?.answer) return;
+    setError('');
+    saveTurns([...turns.filter(({ answer }) => answer !== null), {
+      question: saved.question, answer: saved.answer, questionId, how: profile.how,
+    }]);
+  }
+
   async function send(question, retry = false) {
     if (!question || activeRequest.current) return;
     const controller = new AbortController();
@@ -78,7 +82,8 @@ export default function VisitorChat({ data, profile }) {
     setError('');
     setPending(true);
     try {
-      const result = await askArtworkQuestion(exhibition.id, artworkId, question, previous.slice(-6), controller.signal);
+      const history = previous.slice(-6).map(({ question, answer }) => ({ question, answer }));
+      const result = await askArtworkQuestion(exhibition.id, artworkId, question, history, controller.signal);
       if (controller.signal.aborted) return;
       saveTurns([...previous, { question, answer: result.answer }]);
       if (import.meta.env.DEV) {
@@ -99,37 +104,14 @@ export default function VisitorChat({ data, profile }) {
     }
   }
 
-  async function listenToAnswer(answer) {
-    const key = JSON.stringify([answer, profile.why]);
-    if (answerAudio[key]?.state === 'loading') return;
-    try {
-      setAnswerAudio((current) => ({ ...current, [key]: { state: 'loading' } }));
-      let url = answerAudioCache.current.get(key);
-      if (!url) {
-        const blob = await generateVisitorSpeech(answer, profile.why);
-        url = URL.createObjectURL(blob);
-        answerAudioCache.current.set(key, url);
-      }
-      activeAnswerAudio.current?.pause();
-      const audio = new Audio(url);
-      activeAnswerAudio.current = audio;
-      audio.addEventListener('ended', () => {
-        if (activeAnswerAudio.current === audio) activeAnswerAudio.current = null;
-        setAnswerAudio((current) => ({ ...current, [key]: { state: 'idle' } }));
-      }, { once: true });
-      await audio.play();
-      setAnswerAudio((current) => ({ ...current, [key]: { state: 'playing' } }));
-    } catch (error) {
-      setAnswerAudio((current) => ({
-        ...current,
-        [key]: {
-          state: 'failed',
-          message: error instanceof TypeError ? '음성 서버에 연결할 수 없습니다.' : error.message,
-        },
-      }));
-    }
-  }
-
+  const remainingQuestions = suggestedQuestions.filter(({ question_id }) => !savedAnswerSeen(question_id));
+  const suggestions = remainingQuestions.length > 0 && <section
+    className="visitor-chat-suggestions visitor-question-options" aria-label="추천 질문">
+    {remainingQuestions.map(({ question, question_id }) => <button className="visitor-question-option" type="button" key={question_id}
+      disabled={pending} onClick={() => showSavedAnswer(question_id)}>
+      {question}<span aria-hidden="true">↗</span>
+    </button>)}
+  </section>;
   return <div className="visitor-chat" aria-label={name + ' 질문하기'}>
     <header className="visitor-header visitor-header-lined visitor-chat-header">
       <Link className="visitor-icon" to={visitorUrl(exhibition.id, artworkId)} aria-label="작품 감상으로 돌아가기">
@@ -138,40 +120,36 @@ export default function VisitorChat({ data, profile }) {
       <p className="visitor-header-title">{exhibition.name}</p>
     </header>
     <div className="visitor-chat-viewport" ref={viewport}>
-      {suggested.state === 'ready' && suggested.questions.length > 0 && <section className="visitor-chat-suggestions" aria-label="추천 질문">
-        <h2>더 궁금한 점이 있나요?</h2>
-        <div>
-          {suggested.questions.map((item) => <button type="button" key={item.question}
-            disabled={pending} onClick={() => send(item.question)}>{item.question}</button>)}
+      <div className="visitor-chat-artwork">
+        <div className="visitor-poster visitor-chat-thumbnail">
+          {artworkImage(data) && <img src={artworkImage(data)} alt="" />}
         </div>
-      </section>}
+        <div><h1>{name}</h1><p>{[data.year, data.artist].filter(Boolean).join(' · ')}</p></div>
+      </div>
       <div className="visitor-chat-messages" role="log" aria-label="작품 대화 내역">
         {turns.map(({ question, answer }, index) => <div className="visitor-chat-turn" key={index}>
           <p className="visitor-chat-bubble visitor-chat-question" aria-label={'관람객: ' + question}>{question}</p>
-          {answer && <div className="visitor-chat-answer-block">
-            <p className="visitor-chat-bubble visitor-chat-answer" aria-label={'AI 도슨트: ' + answer}>{answer}</p>
-            <button className="visitor-chat-listen" type="button"
-              disabled={answerAudio[JSON.stringify([answer, profile.why])]?.state === 'loading'}
-              onClick={() => listenToAnswer(answer)}>답변 듣기</button>
-            {answerAudio[JSON.stringify([answer, profile.why])]?.state === 'failed' &&
-              <p className="visitor-chat-audio-error" role="alert">
-                {answerAudio[JSON.stringify([answer, profile.why])].message}
-              </p>}
-          </div>}
+          {answer && <p className="visitor-chat-bubble visitor-chat-answer" aria-label={'AI 도슨트: ' + answer}>{answer}</p>}
         </div>)}
-        {pending && <p className="visitor-chat-bubble visitor-chat-answer" role="status">답변을 만드는 중이에요…</p>}
+        {pending && <div className="visitor-chat-bubble visitor-chat-answer" role="status" aria-label="답변을 만드는 중이에요">
+          <img className="visitor-chat-loading" src={chatLoading} alt="" />
+        </div>}
         {!pending && failedQuestion && <div className="visitor-chat-error">
           <p role="alert">{error || '이 질문의 답변을 받지 못했어요.'}</p>
           <button className="visitor-button" type="button" onClick={() => send(failedQuestion, true)}>다시 시도</button>
         </div>}
       </div>
-      <Link className="visitor-button visitor-chat-list" to={visitorUrl(exhibition.id)}>작품 목록</Link>
+      {!!turns.length && !pending && suggestions}
+      {nextArtwork && !!turns.length && !pending && !failedQuestion && <div className="visitor-chat-navigation">
+        <Link className="visitor-button" to={visitorUrl(exhibition.id, nextArtwork.id)}>다음 작품</Link>
+      </div>}
     </div>
+    {!turns.length && !selectedQuestionId && suggestions}
     <form className="visitor-chat-composer" onSubmit={(event) => {
       event.preventDefault();
       if (!composing.current) send(draft.trim());
     }}>
-      <input aria-label={name + '에 대한 질문'} placeholder="텍스트를 입력하세요" autoComplete="off"
+      <input ref={composer} aria-label={name + '에 대한 질문'} placeholder="텍스트를 입력하세요" autoComplete="off"
         maxLength={1000} value={draft} onChange={(event) => setDraft(event.target.value)}
         onCompositionStart={() => { composing.current = true; }}
         onCompositionEnd={() => { composing.current = false; }}
