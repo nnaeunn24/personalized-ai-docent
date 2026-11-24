@@ -55,6 +55,7 @@ const artwork = (row) => ({
 const unit = (row) => ({
   id: row.id, artworkId: row.artwork_id, label: 'UNIT-' + String(row.number).padStart(3, '0'),
   content: row.content, category: row.category, status: unitStatuses[row.status], updatedAt: row.updated_at,
+  isRequired: row.is_required ?? false,
   extractionMethod: row.extraction_method, extractionModel: row.extraction_model,
   sourceEvidence: row.source_evidence ?? [], classificationRationale: row.classification_rationale,
   needsSplit: row.needs_split, needsReview: row.needs_review,
@@ -93,6 +94,9 @@ export const adminApi = {
     request('/auth/password', { token, method: 'PUT', body: { password } }),
 
   activeAiPrompts: (token, signal) => request('/ai/prompts', { token, signal }),
+  activateAiPrompt: (token, kind, version) => request('/ai/prompts/' + idPath(kind) + '/activate', {
+    token, method: 'POST', body: { version },
+  }),
   aiPromptVersions: (token, kind, signal) =>
     list('/ai/prompts/' + idPath(kind) + '/versions', token, (row) => row, {}, signal),
   updateAiPrompt: (token, kind, body) =>
@@ -111,6 +115,10 @@ export const adminApi = {
     }),
   saveFollowup: (token, artworkId, id, body) =>
     request('/artworks/' + idPath(artworkId) + '/followups/' + idPath(id), { token, method: 'PUT', body }),
+  publishWorkspaceFollowup: (token, artworkId, question, edit) =>
+    request('/artworks/' + idPath(artworkId) + '/followups/' + idPath(question.id) + '/review-and-publish', {
+      token, method: 'POST', body: { body: { updated_at: question.updated_at }, edit },
+    }),
   deleteFollowup: (token, artworkId, question) =>
     request('/artworks/' + idPath(artworkId) + '/followups/' + idPath(question.id) +
       '?' + new URLSearchParams({ updated_at: question.updated_at }), { token, method: 'DELETE' }),
@@ -142,11 +150,19 @@ export const adminApi = {
   listUnits: (token, { artworkId, status, signal } = {}) =>
     list(artworkId ? '/artworks/' + idPath(artworkId) + '/units' : '/units', token, unit,
       status ? { status: unitStatusCodes[status] ?? status } : {}, signal),
-  saveUnit: (token, { id, artworkId, content, category }) =>
-    save(id ? '/units' : '/artworks/' + idPath(artworkId) + '/units', token, { content, category }, id, unit),
+  saveUnit: (token, { id, artworkId, content, category, isRequired }) =>
+    save(id ? '/units' : '/artworks/' + idPath(artworkId) + '/units', token, {
+      content, category, is_required: isRequired,
+    }, id, unit),
   reviewUnit: (token, { id, updatedAt }) => request('/units/' + idPath(id) + '/review', {
     token, method: 'POST', body: { updated_at: updatedAt },
   }).then(unit),
+  reviewWorkspaceUnit: (token, { id, updatedAt }, action, edits) =>
+    request('/units/' + idPath(id) + '/workspace-review/' + action, {
+      token, method: 'POST', body: {
+        updated_at: updatedAt, edits: edits && { content: edits.content, category: edits.category, is_required: edits.isRequired },
+      },
+    }).then(unit),
   publishUnits: (token, artworkId) =>
     request('/artworks/' + idPath(artworkId) + '/units/publish', { token, method: 'POST' })
       .then(({ units }) => units.map(unit)),

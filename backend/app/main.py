@@ -20,9 +20,9 @@ from pydantic import AliasChoices, AwareDatetime, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .docent import DEFAULT_DOCENT_REVIEW_ARTWORK_IDS
-from .catalog_images import public_catalog_image
+from .catalog_images import CATALOG_IMAGE_FORMATS, catalog_image_extension, public_catalog_image
 from .visitor import visitor_router
-from .ai_settings import PromptKind, PromptTest, PromptUpdate
+from .ai_settings import EXTRACTION_PROMPT_TITLES, ExtractionPromptKind, PromptActivation, PromptKind, PromptTest, PromptUpdate
 from .gemini_units import Gemini, classify_units, extract_units
 from .followups import (
     FollowupEdit, FollowupPromptTest, GenerateFollowups, ReviewFollowups,
@@ -30,7 +30,7 @@ from .followups import (
 )
 from .schemas import (
     Artwork, ArtworkOrder, Exhibition, Login, PasswordRecovery, PasswordReset, RecoveryCodeExchange,
-    RecoveryTokenHash, Refresh, Review, Unit, UnitStatus, Visibility,
+    RecoveryTokenHash, Refresh, Review, Unit, UnitStatus, Visibility, WorkspaceUnitReview,
 )
 
 
@@ -136,6 +136,11 @@ async def supabase(request, method, path, *, token=None, params=None, payload=No
         raise HTTPException(response.status_code, "Supabase denied this request.")
     if path == "/rest/v1/rpc/set_exhibition_artwork_order" and response.status_code == 404:
         raise HTTPException(503, "Supabase에 08_exhibition_artwork_order.sql을 적용해 주세요.")
+    if path in ("/rest/v1/rpc/transition_workspace_unit", "/rest/v1/rpc/publish_workspace_followup"):
+        if response.status_code == 404:
+            raise HTTPException(503, "Supabase에 12_exhibition_workspace.sql을 적용해 주세요.")
+        if response.status_code in (409, 422):
+            raise HTTPException(response.status_code, response.json()["message"])
     if path.startswith("/rest/v1/") and "followup" in path:
         if response.status_code == 404:
             raise HTTPException(503, "Supabase에 10_followup_questions.sql을 적용해 주세요.")
@@ -143,6 +148,13 @@ async def supabase(request, method, path, *, token=None, params=None, payload=No
             raise HTTPException(409, "질문 또는 근거 Unit이 변경됐습니다. 새로고침 후 다시 시도해 주세요.")
         if response.status_code == 422:
             raise HTTPException(422, "두 HOW 답변과 유효한 Unit이 필요합니다. 게시하려면 근거 Unit도 게시해야 합니다.")
+    if path == "/rest/v1/rpc/activate_missing_extraction_prompt":
+        if response.status_code == 404:
+            raise HTTPException(503, "Supabase에 14_recover_extraction_prompts.sql을 적용한 뒤 AI Settings에서 다시 시도해 주세요.")
+        if response.status_code == 409:
+            raise HTTPException(409, "프롬프트 상태가 변경되었습니다. AI Settings에서 저장된 설정을 다시 불러오세요.")
+        if response.status_code == 422:
+            raise HTTPException(422, "활성화할 기존 버전을 다시 선택해 주세요.")
     if path in ("/rest/v1/admin_ai_active_prompts", "/rest/v1/admin_ai_prompt_versions",
                 "/rest/v1/admin_ai_runs", "/rest/v1/rpc/set_admin_ai_prompt",
                 "/rest/v1/rpc/store_prompted_artwork_extraction", "/rest/v1/rpc/store_verified_artwork_unit_extraction",
@@ -322,23 +334,24 @@ def catalog_image_row(row, field):
 async def upload_catalog_image(request: Request, admin: AdminAccess):
     config = settings()
     key = config.supabase_publishable_key.get_secret_value() or config.supabase_secret_key.get_secret_value()
-    if not config.visitor_image_bucket or not config.supabase_url or not key:
+    if not config.supabase_url or not key:
         raise HTTPException(503, "전시·작품 이미지 저장소가 설정되어 있지 않습니다.")
-    signatures = {"image/jpeg": ("jpg", b"\xff\xd8\xff"), "image/png": ("png", b"\x89PNG\r\n\x1a\n")}
-    media_type = request.headers.get("content-type")
-    if media_type not in signatures:
-        raise HTTPException(415, "JPG 또는 PNG 이미지를 선택해 주세요.")
+    if not config.visitor_image_bucket.strip():
+        raise HTTPException(503, "이미지 저장소가 설정되어 있지 않습니다. 백엔드 VISITOR_IMAGE_BUCKET에 Supabase 공개 버킷 이름을 입력해 주세요.")
+    media_type = request.headers.get("content-type", "").lower()
+    if media_type not in CATALOG_IMAGE_FORMATS:
+        raise HTTPException(415, "JPG, JPEG, PNG 또는 WEBP 이미지를 선택해 주세요.")
     image = bytearray()
     async for chunk in request.stream():
         if len(image) + len(chunk) > 8 * 1024 * 1024:
             raise HTTPException(413, "8MB 이하의 이미지를 선택해 주세요.")
         image.extend(chunk)
-    extension, signature = signatures[media_type]
-    if not image.startswith(signature):
+    extension = catalog_image_extension(media_type, image)
+    if not extension:
         raise HTTPException(422, "이미지 파일 형식이 올바르지 않습니다.")
 
     object_key = f"docent-catalog/{UUID(admin.profile['id'])}/{sha256(image).hexdigest()}.{extension}"
-    bucket = quote(config.visitor_image_bucket, safe="")
+    bucket = quote(config.visitor_image_bucket.strip(), safe="")
     url = f"{config.supabase_url.rstrip('/')}/storage/v1/object/{bucket}/{object_key}"
     public_url = public_catalog_image(config, object_key)
     client = request.app.state.http
@@ -347,11 +360,13 @@ async def upload_catalog_image(request: Request, admin: AdminAccess):
             url, content=bytes(image), timeout=30.0,
             headers={"apikey": key, "Authorization": f"Bearer {admin.token}", "Content-Type": media_type},
         )
-        if not response.is_success:
-            existing = await client.head(public_url)
-            if not existing.is_success:
-                logger.warning("Catalog image upload rejected: status=%s", response.status_code)
-                raise HTTPException(502, "이미지를 저장하지 못했습니다. 이미지 버킷과 업로드 권한을 확인해 주세요.")
+        # Content-addressed uploads may already exist after a retry or an earlier save.
+        readable = await client.head(public_url, timeout=15.0)
+        if not readable.is_success:
+            logger.warning("Catalog image unavailable: upload_status=%s read_status=%s", response.status_code, readable.status_code)
+            if response.is_success:
+                raise HTTPException(502, "저장한 이미지를 공개 주소에서 읽을 수 없습니다. Supabase 버킷의 Public 설정을 확인해 주세요.")
+            raise HTTPException(502, "이미지를 저장하지 못했습니다. 버킷 이름, 허용 파일 형식 및 관리자 업로드 정책을 확인해 주세요.")
     except httpx.RequestError:
         raise HTTPException(503, "이미지 저장소에 연결하지 못했습니다.") from None
     return {"key": object_key}
@@ -454,6 +469,13 @@ async def change_ai_prompt(kind: PromptKind, body: PromptUpdate, admin: AdminAcc
     return {"kind": kind, "version": version}
 
 
+@app.post("/api/admin/ai/prompts/{kind}/activate")
+async def activate_ai_prompt(kind: ExtractionPromptKind, body: PromptActivation, admin: AdminAccess):
+    return await supabase(admin.request, "POST", "/rest/v1/rpc/activate_missing_extraction_prompt", token=admin.token, payload={
+        "prompt_kind": kind, "requested_version": body.version,
+    })
+
+
 async def run_ai_pipeline(admin, description, prompts):
     config = settings()
     gemini = Gemini(admin.request.app.state.http, config.gemini_api_key.get_secret_value())
@@ -527,8 +549,12 @@ async def extract_artwork_units(artwork_id: UUID, admin: AdminAccess):
                 "classification": {"version": None, "body": "Choose by core information: VISUAL for appearance, MEANING for interpretation, TECHNIQUE for process, BACKGROUND for context. Flag mixed or ambiguous units."},
             }
         config = settings()
-        if set(prompts) != {"extraction", "classification"}:
-            raise HTTPException(503, "활성 추출 및 분류 프롬프트가 필요합니다.")
+        missing = [title for kind, title in EXTRACTION_PROMPT_TITLES.items() if kind not in prompts]
+        if missing:
+            raise HTTPException(
+                503, f"활성 프롬프트가 없습니다 ({', '.join(missing)}). "
+                "AI Settings에서 기존 버전을 활성화하거나, 저장된 버전이 없으면 프로젝트 기본 프롬프트를 설정한 뒤 다시 추출하세요.",
+            )
         revision = json.dumps([
             description, prompts["extraction"]["version"], prompts["classification"]["version"],
             config.gemini_model, config.gemini_classification_model or config.gemini_model,
@@ -598,13 +624,13 @@ async def units(artwork_id: UUID, admin: AdminAccess, status: UnitStatus | None 
 @app.post("/api/admin/artworks/{artwork_id}/units", status_code=201)
 async def create_unit(artwork_id: UUID, body: Unit, admin: AdminAccess):
     return only_row(await admin.rows(
-        "content_units", "POST", payload={**body.model_dump(), "artwork_id": str(artwork_id)},
+        "content_units", "POST", payload={**body.model_dump(exclude_none=True), "artwork_id": str(artwork_id)},
     ))
 
 
 @app.put("/api/admin/units/{record_id}")
 async def update_unit(record_id: UUID, body: Unit, admin: AdminAccess):
-    return only_row(await admin.rows("content_units", "PATCH", filters=by_id(record_id), payload=body.model_dump()))
+    return only_row(await admin.rows("content_units", "PATCH", filters=by_id(record_id), payload=body.model_dump(exclude_none=True)))
 
 
 @app.post("/api/admin/units/{record_id}/review")
@@ -615,6 +641,22 @@ async def review_unit(record_id: UUID, body: Review, admin: AdminAccess, backgro
         raise HTTPException(409, "The unit changed or is no longer pending. Reload it before reviewing.")
     background_tasks.add_task(auto_generate_followups, admin, UUID(rows[0]["artwork_id"]))
     return rows[0]
+
+
+@app.post("/api/admin/units/{record_id}/workspace-review/{action}")
+async def review_workspace_unit(
+    record_id: UUID, action: Literal["review", "publish", "unpublish"], body: WorkspaceUnitReview,
+    admin: AdminAccess, background_tasks: BackgroundTasks,
+):
+    operation = {"review": "reviewed", "publish": "published", "unpublish": "unpublish"}
+    result = await followup_rpc(admin, "transition_workspace_unit", {
+        "target_id": str(record_id), "expected_at": body.updated_at.isoformat(), "next_status": operation[action],
+        "edits": body.edits.model_dump(exclude_none=True) if body.edits and action != "unpublish" else None,
+    })
+    record = only_row(result) if isinstance(result, list) else result
+    if action != "unpublish":
+        background_tasks.add_task(auto_generate_followups, admin, UUID(record["artwork_id"]))
+    return record
 
 
 @app.post("/api/admin/artworks/{artwork_id}/units/publish")
@@ -644,6 +686,13 @@ async def followup_rows(admin, artwork_id):
     return await admin.rows("followup_questions", filters={
         "artwork_id": f"eq.{artwork_id}", "order": "priority.asc,id.asc",
     })
+
+
+async def validate_followup_category(admin, artwork_id, question_id, category):
+    rows = await followup_rows(admin, artwork_id)
+    current = next((row for row in rows if row["id"] == str(question_id)), None)
+    if current and current["category"] != category and sum(row["category"] == category for row in rows) >= 2:
+        raise HTTPException(422, "카테고리당 질문은 최대 2개입니다.")
 
 
 async def followup_rpc(admin, operation, payload):
@@ -716,7 +765,7 @@ async def auto_generate_followups(admin, artwork_id):
 @app.get("/api/admin/followups")
 async def followup_overview(admin: AdminAccess, limit: Limit = 50, offset: Offset = 0):
     return await admin.rows("followup_questions", filters={
-        **page(limit, offset), "select": "id,artwork_id,review_status",
+        **page(limit, offset), "select": "id,artwork_id,question,review_status,updated_at",
     })
 
 
@@ -737,6 +786,7 @@ async def edit_followup(artwork_id: UUID, question_id: UUID, body: FollowupEdit,
     units = await followup_units(admin, artwork_id)
     if not set(map(str, body.related_unit_ids)) <= {unit["id"] for unit in units}:
         raise HTTPException(422, "이 작품의 Unit만 연결할 수 있습니다.")
+    await validate_followup_category(admin, artwork_id, question_id, body.category)
     rows = await admin.rows("followup_questions", "PATCH", filters={
         **by_id(question_id), "artwork_id": f"eq.{artwork_id}", "updated_at": f"eq.{body.updated_at.isoformat()}",
     }, payload=body.model_dump(mode="json", exclude={"updated_at"}))
@@ -751,6 +801,19 @@ async def update_followup_status(artwork_id: UUID, body: ReviewFollowups, admin:
         "target_artwork": str(artwork_id), "expected_rows": body.model_dump(mode="json")["items"],
         "next_status": body.status,
     })
+
+
+@app.post("/api/admin/artworks/{artwork_id}/followups/{question_id}/review-and-publish")
+async def publish_workspace_followup(
+    artwork_id: UUID, question_id: UUID, body: Review, admin: AdminAccess, edit: FollowupEdit | None = None,
+):
+    if edit:
+        await validate_followup_category(admin, artwork_id, question_id, edit.category)
+    result = await followup_rpc(admin, "publish_workspace_followup", {
+        "target_artwork": str(artwork_id), "target_id": str(question_id),
+        "expected_at": body.updated_at.isoformat(), "edits": edit.model_dump(mode="json", exclude={"updated_at"}) if edit else None,
+    })
+    return only_row(result) if isinstance(result, list) else result
 
 
 @app.delete("/api/admin/artworks/{artwork_id}/followups/{question_id}", status_code=204)

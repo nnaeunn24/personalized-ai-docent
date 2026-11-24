@@ -9,8 +9,6 @@ import './admin/admin.css';
 const screens = {
   dashboard: ['Dashboard', '대시보드'],
   exhibitions: ['Exhibitions', '전시 관리'],
-  artworks: ['Artworks', '작품 관리'],
-  units: ['Content Units', 'Content Units'],
   ai: ['AI Settings', 'AI Settings'],
 };
 
@@ -85,13 +83,21 @@ function Login({ onLogin, error, busy }) {
   </main>;
 }
 
-function ImagePicker({ value, onChange, cover = false, imageUrl }) {
+const catalogImageTypes = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
+
+function ImagePicker({ value, onChange, cover = false, imageUrl, busy = false, status }) {
   const [error, setError] = useState('');
   const id = cover ? 'exhibition-image' : 'artwork-image';
   function pick(file) {
-    if (!file) return;
-    if (!['image/jpeg', 'image/png'].includes(file.type)) {
-      setError('JPG 또는 PNG 이미지를 선택하세요.');
+    if (!file || busy) return;
+    const extension = file.name.split('.').at(-1).toLowerCase();
+    const mime = Object.hasOwn(catalogImageTypes, extension) ? catalogImageTypes[extension] : undefined;
+    if (!mime || (file.type && file.type !== 'application/octet-stream' && file.type !== mime)) {
+      setError('JPG, JPEG, PNG 또는 WEBP 이미지를 선택하세요.');
+      return;
+    }
+    if (!file.size) {
+      setError('빈 이미지 파일은 업로드할 수 없습니다.');
       return;
     }
     if (file.size > 8 * 1024 * 1024) {
@@ -99,26 +105,27 @@ function ImagePicker({ value, onChange, cover = false, imageUrl }) {
       return;
     }
     setError('');
-    onChange(file);
+    onChange(file.type === mime ? file : file.slice(0, file.size, mime));
   }
   return <div className="admin-upload">
     {(value || imageUrl || !cover) && <RecordImage record={{ image: value, imageUrl }}
       className={cover ? 'admin-cover-preview' : 'admin-artwork-preview'} />}
-    <input className="admin-file" id={id} type="file" accept="image/jpeg,image/png"
+    <input className="admin-file" id={id} type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" disabled={busy}
       onChange={(event) => { pick(event.target.files[0]); event.target.value = ''; }} />
-    <label className={'admin-button secondary' + (cover ? ' admin-drop' : '')} htmlFor={id}
+    <label className={'admin-button secondary' + (cover ? ' admin-drop' : '')} htmlFor={id} aria-disabled={busy || undefined}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => { event.preventDefault(); pick(event.dataTransfer.files[0]); }}>
       {value || imageUrl ? '이미지 변경' : cover ? '대표 이미지 업로드' : '이미지 업로드'}
-      {cover && <small>JPG · PNG / 클릭하거나 파일을 끌어놓으세요</small>}
+      {cover && <small>JPG · JPEG · PNG · WEBP / 클릭하거나 파일을 끌어놓으세요</small>}
     </label>
-    {!cover && <small>JPG · PNG / 원본 비율 유지</small>}
-    {value && <Button tone="ghost" onClick={() => onChange(null)}>{imageUrl ? '이미지 변경 취소' : '이미지 제거'}</Button>}
+    {!cover && <small>JPG · JPEG · PNG · WEBP / 원본 비율 유지</small>}
+    {value && <p role="status" className="admin-muted">{status || '미리보기 · 저장하면 이미지가 업로드됩니다.'}</p>}
+    {value && <Button tone="ghost" disabled={busy} onClick={() => onChange(null)}>{imageUrl ? '이미지 변경 취소' : '선택한 이미지 제거'}</Button>}
     {error && <Notice error>{error}</Notice>}
   </div>;
 }
 
-function ExhibitionForm({ record, onSave, onClose, busy, error }) {
+function ExhibitionForm({ record, onSave, onClose, busy, error, imageStatus }) {
   const [image, setImage] = useState(record?.image ?? null);
   return <Modal title={record ? '전시 정보 수정' : '신규 전시 등록'} onClose={onClose}>
     <form className="admin-stack" onSubmit={(event) => {
@@ -128,7 +135,7 @@ function ExhibitionForm({ record, onSave, onClose, busy, error }) {
     }}>
       <Field label="전시명"><input name="name" defaultValue={record?.name} placeholder="전시명을 입력하세요" required /></Field>
       <Field label="전시 소개"><textarea name="description" defaultValue={record?.description} placeholder="관람객에게 전시를 소개해 주세요" /></Field>
-      <ImagePicker value={image} onChange={setImage} cover imageUrl={record?.imageUrl} />
+      <ImagePicker value={image} onChange={setImage} cover imageUrl={record?.imageUrl} busy={busy} status={imageStatus} />
         {error && <Notice error>{error}</Notice>}
       <div className="admin-dialog-actions"><Button tone="secondary" onClick={onClose}>취소</Button>
         <Button type="submit" disabled={busy}>{record ? '저장' : '초안으로 만들기'}</Button></div>
@@ -140,6 +147,29 @@ function Heading({ label, title, description, children, className = '' }) {
   return <div className={'admin-heading ' + className}><div><small>{label}</small><h1>{title}</h1>
     {description && <p className="admin-heading-description">{description}</p>}</div>
     {children && <div className="admin-actions">{children}</div>}</div>;
+}
+
+function ArtworkHeading({ artwork, exhibition, active }) {
+  const { id } = artwork;
+  const tabs = [
+    ['overview', 'Overview', adminUrl('artwork-edit', { id })],
+    ['units', 'Content Units', adminUrl('unit-review', { id })],
+    ['followups', 'Follow-up Questions', adminUrl('artwork-edit', { id, panel: 'followups' })],
+  ];
+  return <div className="admin-artwork-header">
+    <nav className="admin-detail-breadcrumb" aria-label="현재 위치">
+      <Link to={adminUrl('exhibitions')}>전시 목록</Link><span aria-hidden="true">›</span>
+      {exhibition && <><Link to={adminUrl('exhibition', { id: exhibition.id })}>{exhibition.name}</Link><span aria-hidden="true">›</span></>}
+      <span aria-current="page">{artwork.name}</span>
+    </nav>
+    <Heading title={artwork.name} description={<>
+      {[artwork.artist, artwork.year, artwork.externalId].filter(Boolean).join(' · ')}
+      {exhibition && <span className={'admin-badge ' + (exhibition.isPublic ? 'published' : '')}>{exhibition.isPublic ? '공개' : '비공개'}</span>}
+    </>} />
+    <nav className="admin-artwork-tabs" aria-label="작품 관리">
+      {tabs.map(([key, label, url]) => <Link key={key} to={url} aria-current={key === active ? 'page' : undefined}>{label}</Link>)}
+    </nav>
+  </div>;
 }
 
 function RecordImage({ record, className = '' }) {
@@ -176,8 +206,20 @@ function Dashboard({ exhibitions, artworks, units, onAdd, followups }) {
   const reviewed = units.length - pending.length;
   const progress = units.length ? Math.round(reviewed / units.length * 100) : 0;
   const artworkById = new Map(artworks.map((artwork) => [artwork.id, artwork]));
-  const recentUnits = [...units].filter((unit) => unit.updatedAt)
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 4);
+  const recentActivity = [
+    ...units.map((unit) => ({
+      id: unit.id, time: unit.updatedAt, label: 'Content Unit', title: unit.label, artworkId: unit.artworkId,
+      url: adminUrl('unit-review', { id: unit.artworkId }),
+    })),
+    ...(followups ?? []).map((question) => ({
+      id: question.id, time: question.updated_at, label: '후속 질문', title: question.question, artworkId: question.artwork_id,
+      url: adminUrl('artwork-edit', { id: question.artwork_id, panel: 'followups' }),
+    })),
+    ...artworks.map((artwork) => ({
+      id: artwork.id, time: artwork.createdAt, label: '작품 등록', title: artwork.name,
+      url: adminUrl('artwork-edit', { id: artwork.id }),
+    })),
+  ].filter(({ time }) => time).sort((left, right) => Date.parse(right.time) - Date.parse(left.time)).slice(0, 4);
   const pendingFollowups = followups?.filter((item) => item.review_status === 'pending');
   const followupArtworkIds = [...new Set(pendingFollowups?.map((item) => item.artwork_id))];
   const metrics = [
@@ -217,10 +259,16 @@ function Dashboard({ exhibitions, artworks, units, onAdd, followups }) {
     </section>
     <section className="admin-card admin-stack">
       <h2>최근 작업</h2>
-      {recentUnits.length ? <ul className="admin-dashboard-links">
-        {recentUnits.map((unit) => <li key={unit.id}><Link to={adminUrl('unit-review', { id: unit.artworkId })}>
-          {artworkById.get(unit.artworkId)?.name} · {unit.label}
-        </Link> <Status unit={unit} /></li>)}
+      {recentActivity.length ? <ul className="admin-dashboard-links admin-recent-activity">
+        {recentActivity.map((activity) => <li key={activity.label + activity.id}>
+          <strong>{activity.label}</strong>
+          <Link to={activity.url}>
+            {[artworkById.get(activity.artworkId)?.name, activity.title].filter(Boolean).join(' · ')}
+          </Link>
+          <time dateTime={activity.time}>{new Date(activity.time).toLocaleString('ko-KR', {
+            month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+          })}</time>
+        </li>)}
       </ul> : <p className="admin-muted">표시할 최근 검수 작업이 없습니다.</p>}
     </section>
   </>;
@@ -262,7 +310,7 @@ function Listing({ view, exhibitions, artworks, units, onAdd }) {
     : (view === 'exhibitions' ? ['비공개', '공개'] : statuses).map((status) => [status, status]);
   const detail = { exhibitions: 'exhibition', artworks: 'artwork-edit', units: 'unit-review' }[view];
   return <>
-    <Heading title={screens[view][1]}>
+    <Heading title={screens[view]?.[1] ?? (view === 'artworks' ? '작품 관리' : 'Content Units')}>
       {view === 'exhibitions' && <Button onClick={onAdd}>+ 신규 전시 등록</Button>}
       {view === 'artworks' && <Button to={adminUrl('artwork-new')}>+ 작품 등록</Button>}
       {view === 'units' && <Button to={adminUrl('artworks')}>작품 목록 보기</Button>}
@@ -331,20 +379,26 @@ function ArtworkOrderList({ artworks, onSave }) {
   return <>
     <p className="admin-muted">관람객은 사전 질문을 마치면 첫 번째 작품부터 감상합니다.</p>
     <ol className="admin-record-list admin-artwork-order">
-      {ids.map((id, index) => <li key={id}>
+      {ids.map((id, index) => {
+        const artwork = byId.get(id);
+        return <li key={id}>
         <div className="admin-artwork-order-row">
           <span className="admin-artwork-order-position" aria-hidden="true">{index + 1}</span>
           <Link className="admin-table-title" to={adminUrl('artwork-edit', { id })}>
-            <RecordImage record={byId.get(id)} />{byId.get(id).name}
+            <RecordImage record={artwork} /><span>
+              <strong>{artwork.name}</strong>
+              <small>{[artwork.artist, artwork.year].filter(Boolean).join(' · ')}</small>
+            </span>
           </Link>
           <div className="admin-artwork-order-controls">
-            <Button tone="secondary" aria-label={byId.get(id).name + ' 위로'} disabled={saving || index === 0}
+            <Button tone="secondary" aria-label={artwork.name + ' 위로'} disabled={saving || index === 0}
               onClick={() => move(index, -1)}>↑</Button>
-            <Button tone="secondary" aria-label={byId.get(id).name + ' 아래로'} disabled={saving || index === ids.length - 1}
+            <Button tone="secondary" aria-label={artwork.name + ' 아래로'} disabled={saving || index === ids.length - 1}
               onClick={() => move(index, 1)}>↓</Button>
           </div>
         </div>
-      </li>)}
+        </li>;
+      })}
     </ol>
     {error && <Notice error>{error}</Notice>}
     {ids.length > 1 && <Button onClick={save} disabled={!changed || saving}>{saving ? '저장 중…' : '순서 저장'}</Button>}
@@ -360,7 +414,30 @@ function ExhibitionDetail({ record, artworks, onEdit, onDelete, onPublish, onSav
   return <>
     <Heading title={record.name}><Button tone="secondary" to={adminUrl('exhibitions')}>← 전시 목록</Button>
       <Button onClick={onEdit}>전시 정보 수정</Button></Heading>
-    <div className="admin-detail-grid">
+    <div className="admin-stack admin-exhibition-detail">
+      <section className="admin-card admin-stack">
+        <div className="admin-exhibition-summary">
+          <RecordImage record={record} />
+          <div className="admin-stack">
+            <strong>전시 소개</strong>
+            <p className="admin-source admin-blue">{record.description || '등록된 전시 소개가 없습니다.'}</p>
+            {record.updated && <small>최근 수정 · {record.updated}</small>}
+          </div>
+          <span className={record.isPublic ? "admin-badge approved" : "admin-badge"}>{record.isPublic ? "공개" : "비공개"}</span>
+        </div>
+        <hr />
+        <div className="admin-form-grid">
+          <div><strong>전시 코드</strong><p className="admin-muted admin-code">{record.code || '전시 코드 없음'}</p></div>
+          <div><strong>관람객 진입 링크</strong>
+            {record.isPublic && !preview ? <p><Link to={visitorUrl(record.id)}>관람객 화면에서 열기</Link></p>
+              : <p className="admin-muted">전시를 공개하면 관람객이 열 수 있습니다.</p>}
+          </div>
+        </div>
+        <div className="admin-dialog-actions">
+          <Button onClick={onPublish}>공개 상태 변경</Button>
+          <Button tone="danger" onClick={onDelete}>전시 삭제</Button>
+        </div>
+      </section>
       <section className="admin-card admin-stack">
         <div className="admin-section-heading"><h2>전시 작품</h2>
           <Button tone="secondary" to={adminUrl('artwork-new', { exhibition: record.id })}>+ 작품 추가</Button></div>
@@ -368,42 +445,30 @@ function ExhibitionDetail({ record, artworks, onEdit, onDelete, onPublish, onSav
           artworks={ordered} onSave={onSaveOrder} />
           : <p className="admin-muted">등록된 작품이 없습니다. 이 전시에 작품을 추가할 수 있습니다.</p>}
       </section>
-      <section className="admin-card admin-stack">
-        <div className="admin-section-heading"><small>{record.updated}</small>
-          <span className={record.isPublic ? "admin-badge approved" : "admin-badge"}>{record.isPublic ? "공개" : "비공개"}</span></div>
-        {record.description && <p className="admin-source admin-muted">{record.description}</p>}
-        <hr />
-        <Field label="전시 코드"><input value={record.code ?? ""} placeholder="전시 코드 없음" readOnly /></Field>
-        <strong>관람객 진입 링크</strong>
-        {record.isPublic && !preview ? <Link to={visitorUrl(record.id)}>관람객 화면에서 열기</Link>
-          : <p className="admin-muted">실제 전시를 공개하면 관람객이 열 수 있습니다.</p>}
-        <Button onClick={onPublish}>공개 상태 변경</Button>
-        <Button tone="danger" onClick={onDelete}>전시 삭제</Button>
-      </section>
     </div>
   </>;
 }
 
-function ArtworkForm({ record, exhibition, exhibitions, onSave, onDelete, preview, extracting, extractionFailed }) {
+function ArtworkForm({ record, exhibition, exhibitions, onSave, onDelete, preview, extracting, extractionFailed, busy, imageStatus }) {
   const [image, setImage] = useState(record?.image ?? null);
   return <>
-    <Heading className="admin-artwork-heading" label={<Button tone="secondary" to={adminUrl('artworks')}>← 작품 목록</Button>}
-      title={record?.name || '작품 등록'}
-      description={record && <>작품 ID · <span className="admin-artwork-id">ART-{record.id.toUpperCase()}</span></>}>
-      {record && <Button tone="danger" onClick={onDelete} disabled={extracting}>삭제</Button>}
-      <Button type="submit" form="admin-artwork-form" name={preview ? undefined : 'extract'} disabled={extracting}>
-        {preview ? '저장' : extracting ? 'Unit 추출 중…' : extractionFailed ? '추출 재시도' : '저장 후 Unit 추출'}
-      </Button>
-    </Heading>
+    {!record && <Heading title="작품 등록">
+      <Button tone="secondary" to={exhibition ? adminUrl('exhibition', { id: exhibition }) : adminUrl('exhibitions')}>← 소속 전시</Button>
+    </Heading>}
     {extracting && <p role="status" className="admin-notice">Unit을 추출하고 분류하는 중입니다…</p>}
+    {extractionFailed && <p><Link to={adminUrl('ai')}>AI Settings에서 활성 프롬프트 확인</Link></p>}
     <form id="admin-artwork-form" className="admin-artwork-grid" onSubmit={(event) => {
       event.preventDefault();
       const fields = Object.fromEntries(new FormData(event.currentTarget));
-      if (fields.name.trim()) onSave({ ...fields, name: fields.name.trim(), image }, event.nativeEvent.submitter?.name === "extract");
+      if (fields.name.trim()) onSave(
+        { ...fields, name: fields.name.trim(), image },
+        event.nativeEvent.submitter?.name === 'extract',
+        () => setImage(null),
+      );
     }}>
       <div className="admin-stack">
         <section className="admin-card admin-stack">
-          <h2>작품 이미지</h2><ImagePicker value={image} onChange={setImage} imageUrl={record?.imageUrl} />
+          <h2>작품 이미지</h2><ImagePicker value={image} onChange={setImage} imageUrl={record?.imageUrl} busy={busy} status={imageStatus} />
         </section>
         {record && <section className="admin-card admin-stack">
           <h2>작품 관리 정보</h2>
@@ -426,7 +491,7 @@ function ArtworkForm({ record, exhibition, exhibitions, onSave, onDelete, previe
         <div className="admin-section-heading"><h2>원본 Description</h2><span className="admin-badge">원본 자료</span></div>
         <Notice>{record
           ? 'Description을 수정하면 변경된 원문을 기준으로 Unit을 다시 추출하고 검수하세요.'
-          : '저장하면 작품 ID가 자동 생성되고 Description에서 Unit을 추출합니다.'}</Notice>
+          : '저장하면 작품 ID가 자동 생성됩니다. 원본 Description으로 Unit을 추출할 수 있습니다.'}</Notice>
         <textarea name="description" className="admin-description" aria-label="원본 Description" defaultValue={record?.description}
           placeholder="작품 Description 원문을 입력하세요." />
         <div className="admin-form-grid">
@@ -434,6 +499,15 @@ function ArtworkForm({ record, exhibition, exhibitions, onSave, onDelete, previe
             <option value="">언어 선택</option><option value="ko">한국어</option><option value="en">영어</option><option value="other">기타</option>
           </select></Field>
           <Field label="제작 연도"><input name="year" defaultValue={record?.year} placeholder="제작 연도 입력" /></Field>
+        </div>
+        <div className="admin-dialog-actions admin-editor-actions">
+          {record && <Button tone="danger" onClick={onDelete} disabled={busy}>삭제</Button>}
+          <Button tone={preview ? 'primary' : 'secondary'} type="submit" disabled={busy}>
+            {record ? '수정사항 저장' : '저장'}
+          </Button>
+          {!preview && <Button type="submit" name="extract" disabled={busy}>
+            {extracting ? 'Unit 추출 중…' : extractionFailed ? '추출 재시도' : '저장 후 Unit 추출'}
+          </Button>}
         </div>
       </section>
     </form>
@@ -460,11 +534,13 @@ function UnitForm({ onSave, onClose, busy, error }) {
 function UnitEditor({ unit, onSave, onDelete }) {
   const [content, setContent] = useState(unit.content);
   const [category, setCategory] = useState(unit.category);
-  const changed = content.trim() !== unit.content || category !== unit.category;
+  const [isRequired, setRequired] = useState(unit.isRequired ?? false);
+  const changed = content.trim() !== unit.content || category !== unit.category || isRequired !== Boolean(unit.isRequired);
+  const edits = { content: content.trim(), category, isRequired: isRequired === Boolean(unit.isRequired) ? undefined : isRequired };
   const manual = unit.extractionMethod === 'manual';
   return <form className="admin-card admin-stack admin-unit-editor" aria-label="Unit 상세" onSubmit={(event) => {
     event.preventDefault();
-    if (content.trim()) onSave({ ...unit, content: content.trim(), category, status: changed ? statuses[0] : statuses[1] });
+    if (content.trim()) onSave(unit, event.nativeEvent.submitter?.value || 'save', changed ? edits : undefined);
   }}>
     <div className="admin-section-heading"><strong className="admin-unit-detail-code">{unit.label}</strong><Status unit={unit} /></div>
     <Field label="Unit 내용"><textarea value={content} required onChange={(event) => setContent(event.target.value)} /></Field>
@@ -486,17 +562,23 @@ function UnitEditor({ unit, onSave, onDelete }) {
       {[unit.needsSplit && 'AI 분리 제안', unit.needsReview && 'AI 분류 확인 필요'].filter(Boolean).join(' · ')}
     </small>}
     {unit.classificationRationale && <small>AI 분류 근거 · {unit.classificationRationale}</small>}
-    <div className="admin-dialog-actions"><Button tone="danger" onClick={() => onDelete(unit)}>삭제</Button>
-      <Button type="submit" disabled={!content.trim() || (!changed && unit.status !== statuses[0])}>{changed ? '저장' : '검수 완료'}</Button></div>
+    <label className="admin-required-unit"><input type="checkbox" checked={isRequired}
+      onChange={(event) => setRequired(event.target.checked)} /> 필수 Unit</label>
+    <div className="admin-dialog-actions admin-editor-actions">
+      <Button tone="danger" onClick={() => onDelete(unit)}>삭제</Button>
+      <Button tone="secondary" type="submit" value="save" disabled={!content.trim() || !changed}>수정사항 저장</Button>
+      {(unit.status === statuses[0] || changed) && <Button tone="secondary" type="submit" value="review" disabled={!content.trim()}>검수 완료</Button>}
+      {unit.status === statuses[2] && <Button tone="secondary" onClick={() => onSave(unit, 'unpublish')}>게시 해제</Button>}
+      {(unit.status !== statuses[2] || changed) && <Button type="submit" value="publish" disabled={!content.trim()}>검수 완료 및 게시</Button>}
+    </div>
   </form>;
 }
 
 function Status({ unit }) {
-  return <span className={'admin-badge ' + (unit.status === statuses[0] ? 'pending' : 'approved')}>{unit.status}</span>;
+  return <span className={'admin-badge ' + ['pending', 'approved', 'published'][statuses.indexOf(unit.status)]}>{unit.status}</span>;
 }
 
-function UnitReview({ artwork, artworks, units, onAdd, onSave, onDelete, onPublish, onReviewSelected }) {
-  const navigate = useNavigate();
+function UnitReview({ artwork, units, onAdd, onSave, onDelete, onPublish, onReviewSelected, onExtract }) {
   const [filter, setFilter] = useState('');
   const [selectedId, setSelectedId] = useState(null);
   const [categoryFilter, setCategoryFilter] = useState('');
@@ -505,14 +587,14 @@ function UnitReview({ artwork, artworks, units, onAdd, onSave, onDelete, onPubli
   const [reviewResult, setReviewResult] = useState(null);
   const visible = units.filter((unit) => (!filter || unit.status === filter)
     && (!categoryFilter || unit.category === categoryFilter));
-  const selected = visible.find((unit) => unit.id === selectedId);
-  const reviewable = visible.filter((unit) => unit.status === statuses[0]);
+  const selected = visible.find((unit) => unit.id === selectedId) ?? visible[0];
+  const reviewable = visible.filter((unit) => unit.status !== statuses[2]);
   const checked = reviewable.filter((unit) => checkedIds.has(unit.id));
   const allChecked = reviewable.length > 0 && checked.length === reviewable.length;
 
-  async function reviewChecked() {
+  async function reviewChecked(action) {
     setReviewResult(null);
-    const result = await onReviewSelected(checked.map((unit) => unit.id));
+    const result = await onReviewSelected(checked.map((unit) => unit.id), action);
     if (result) {
       setCheckedIds(new Set());
       setReviewResult(result);
@@ -520,48 +602,46 @@ function UnitReview({ artwork, artworks, units, onAdd, onSave, onDelete, onPubli
   }
 
   return <>
-    <Heading label={<Button tone="secondary" to={adminUrl('units')}>← Content Units 목록</Button>} title="Content Unit 검수">
-      <Button tone="secondary" to={adminUrl('artwork-edit', { id: artwork.id, panel: 'followups' })}>Follow-up Questions</Button>
+    <div className="admin-dialog-actions">
+      {onExtract && <Button tone="secondary" disabled={!artwork.description?.trim()} onClick={onExtract}>Unit 다시 추출</Button>}
       <Button disabled={!units.some((unit) => unit.status === statuses[1])} onClick={onPublish}>검수 완료 Unit 게시</Button>
-    </Heading>
-    <div className="admin-review-filters">
-      <select className="admin-review-artwork" aria-label="작품 선택" value={artwork.id}
-        onChange={(event) => navigate(adminUrl('unit-review', { id: event.target.value }))}>
-        {artworks.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
-      </select>
-      <div className="admin-review-statuses" role="group" aria-label="검수 상태 필터">
-        {['', ...statuses].map((status) => <Button key={status} tone="secondary" aria-pressed={filter === status}
-          onClick={() => { setFilter(status); setSelectedId(null); setCheckedIds(new Set()); }}>{status || '전체'}</Button>)}
-      </div>
-      <Button tone="secondary" className="admin-review-category" aria-haspopup="dialog" aria-expanded={categoryDialog}
-        onClick={() => setCategoryDialog(true)}>{categoryFilter || '전체 카테고리'}</Button>
-      <Button tone="secondary" onClick={onAdd}>+ 수동 추가</Button>
     </div>
-    <details className="admin-card admin-review-source">
+    <details className="admin-card admin-review-source" open>
       <summary>원본 Description 보기</summary>
       <p className="admin-source">{artwork.description || '저장된 원본 Description이 없습니다.'}</p>
-      <Link to={adminUrl('artwork-edit', { id: artwork.id })}>작품 상세로</Link>
     </details>
-    <div className={'admin-review-grid' + (selected ? ' has-selection' : '')}>
+    <div className="admin-review-grid">
       <section className="admin-card admin-review-list" aria-label="Content Unit 목록">
+        <div className="admin-section-heading"><h2>Content Units</h2><Button tone="secondary" onClick={onAdd}>+ 수동 추가</Button></div>
+        <div className="admin-review-filters">
+          <div className="admin-review-statuses" role="group" aria-label="검수 상태 필터">
+            {['', ...statuses].map((status) => <Button key={status} tone="secondary" aria-pressed={filter === status}
+              onClick={() => { setFilter(status); setSelectedId(null); setCheckedIds(new Set()); }}>{status || '전체'}</Button>)}
+          </div>
+          <Button tone="secondary" className="admin-review-category" aria-haspopup="dialog" aria-expanded={categoryDialog}
+            onClick={() => setCategoryDialog(true)}>{categoryFilter || '전체 카테고리'}</Button>
+        </div>
         <div className="admin-review-toolbar">
-          <header><h2>Content Units</h2><small>자동 추출된 Unit과 WHAT 분류 결과입니다.</small></header>
           <div className="admin-review-selection">
+            <small>{checked.length}개 선택</small>
             <Button tone="secondary" disabled={!reviewable.length || allChecked}
               onClick={() => setCheckedIds(new Set(reviewable.map((unit) => unit.id)))}>전체 선택</Button>
             <Button tone="secondary" disabled={!checked.length} onClick={() => setCheckedIds(new Set())}>전체 해제</Button>
-            <Button disabled={!checked.length} onClick={reviewChecked}>
-              {checked.length ? `선택한 ${checked.length}개 검수 완료` : '선택한 Unit 검수 완료'}
-            </Button>
+            {checked.length > 0 && <>
+              <Button tone="secondary" disabled={!checked.some((unit) => unit.status === statuses[0])}
+                onClick={() => reviewChecked('review')}>선택 검수 완료</Button>
+              <Button onClick={() => reviewChecked('publish')}>선택 검수 완료 및 게시</Button>
+            </>}
           </div>
         </div>
-        {reviewResult && <p className={reviewResult.failed || reviewResult.refreshFailed ? 'admin-notice error' : 'admin-notice'} role="status">
-          검수 완료 {reviewResult.reviewed}건 · 실패 {reviewResult.failed}건
+        {reviewResult && <p className={reviewResult.failed.length || reviewResult.refreshFailed ? 'admin-notice error' : 'admin-notice'} role="status">
+          {reviewResult.action === 'publish' ? '게시' : '검수 완료'} {reviewResult.reviewed}건 · 실패 {reviewResult.failed.length}건
+          {reviewResult.failed.length > 0 && ' · ' + reviewResult.failed.join(' / ')}
           {reviewResult.refreshFailed && ' · 최신 목록을 불러오지 못했습니다.'}
         </p>}
         <div className="admin-review-results">{visible.map((unit) => <div key={unit.id} className="admin-review-row">
-          <input type="checkbox" aria-label={unit.label + ' 검수 선택'} disabled={unit.status !== statuses[0]}
-            checked={unit.status === statuses[0] && checkedIds.has(unit.id)}
+          <input type="checkbox" aria-label={unit.label + ' 검수 선택'} disabled={unit.status === statuses[2]}
+            checked={unit.status !== statuses[2] && checkedIds.has(unit.id)}
             onChange={(event) => {
               const isChecked = event.target.checked;
               setCheckedIds((current) => {
@@ -572,14 +652,15 @@ function UnitReview({ artwork, artworks, units, onAdd, onSave, onDelete, onPubli
               });
             }} />
           <button type="button" className="admin-unit" aria-pressed={unit.id === selected?.id}
-            onClick={() => setSelectedId((current) => current === unit.id ? null : unit.id)}>
+            onClick={() => setSelectedId(unit.id)}>
             <span className="admin-section-heading"><strong className="admin-unit-list-code">{unit.label}</strong><Status unit={unit} /></span>
             <span className="admin-source">{unit.content}</span><strong className="admin-category">{unit.category}</strong>
           </button>
         </div>)}</div>
         {!visible.length && <p className="admin-muted">{units.length ? '선택한 조건의 Unit이 없습니다.' : '등록된 Content Unit이 없습니다.'}</p>}
       </section>
-      {selected && <UnitEditor key={JSON.stringify(selected)} unit={selected} onSave={onSave} onDelete={onDelete} />}
+      {selected ? <UnitEditor key={JSON.stringify(selected)} unit={selected} onSave={onSave} onDelete={onDelete} />
+        : <div className="admin-card admin-unit-editor"><p className="admin-muted">선택할 Content Unit이 없습니다.</p></div>}
     </div>
     <section className="admin-card admin-review-publish">
       <h2>게시 조건</h2><p className="admin-blue">검수를 완료한 Unit을 게시할 수 있습니다. 관람객 도슨트에는 게시된 Unit만 사용됩니다.</p>
@@ -712,6 +793,8 @@ function Workspace({ preview = false, call, user, onLogout }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [extracting, setExtracting] = useState(false);
+  const [imageStatus, setImageStatus] = useState('');
+  const [imageNotice, setImageNotice] = useState('');
   const [extractionFailedId, setExtractionFailedId] = useState(null);
   const saving = useRef(false);
   const requestedView = params.get('view');
@@ -732,7 +815,9 @@ function Workspace({ preview = false, call, user, onLogout }) {
   const currentReviewUnits = (preview ? units : reviewUnits).filter((unit) => unit.artworkId === id);
   const exhibition = exhibitions.find((record) => record.id === id);
   const artwork = artworks.find((record) => record.id === id);
-  const section = { exhibition: 'exhibitions', 'artwork-new': 'artworks', 'artwork-edit': 'artworks', 'unit-review': 'units' }[view] ?? view;
+  const section = ['dashboard', 'ai'].includes(view) ? view : 'exhibitions';
+  const artworkExhibition = exhibitions.find((record) => record.id === artwork?.exhibitionId);
+  const artworkTab = view === 'unit-review' ? 'units' : showFollowups ? 'followups' : 'overview';
   const close = () => { if (!saving.current) { setModal(null); setError(''); } };
   const open = (details) => { setError(''); setModal(details); };
   const addExhibition = () => open({ kind: 'exhibition' });
@@ -779,6 +864,7 @@ function Workspace({ preview = false, call, user, onLogout }) {
     if (saving.current) return;
     saving.current = true;
     setError('');
+    setImageNotice('');
     setBusy(true);
     try {
       await action();
@@ -791,12 +877,28 @@ function Workspace({ preview = false, call, user, onLogout }) {
     }
   }
 
+  async function saveWithImage(image, saveRecord) {
+    if (!image) return saveRecord();
+    setImageStatus('이미지를 업로드하는 중입니다…');
+    try {
+      const { key } = await call('uploadCatalogImage', image);
+      setImageStatus('업로드한 이미지 경로를 저장하는 중입니다…');
+      const record = await saveRecord(key);
+      setImageNotice('이미지를 업로드하고 저장했습니다.');
+      return record;
+    } catch (failure) {
+      throw new Error('이미지 변경을 저장하지 못했습니다. ' + errorMessage(failure), { cause: failure });
+    } finally {
+      setImageStatus('');
+    }
+  }
+
   function saveExhibition(values) {
     perform(async () => {
-      const imageKey = !preview && values.image ? (await call('uploadCatalogImage', values.image)).key : undefined;
       const record = preview
         ? { ...modal.record, ...values, id: modal.record?.id ?? crypto.randomUUID(), updated: updated() }
-        : await call('saveExhibition', { ...values, imageKey, id: modal.record?.id });
+        : await saveWithImage(values.image, (imageKey) =>
+          call('saveExhibition', { ...values, imageKey, id: modal.record?.id }));
       setExhibitions((current) => mergeRecord(current, record));
       navigate(adminUrl('exhibition', { id: record.id }));
     });
@@ -808,17 +910,20 @@ function Workspace({ preview = false, call, user, onLogout }) {
       record.id === id ? { ...record, artworkOrder: order } : record));
   }
 
-  function saveArtwork(values, extract) {
+  function saveArtwork(values, extractRequested, onPersisted) {
+    const replacingImage = artwork && values.image && values.description.trim() === (artwork.description ?? '').trim();
+    const extract = extractRequested && !replacingImage;
     if (extract && (preview || !values.description.trim())) {
       if (!preview) setError('Unit을 추출하려면 Description을 입력해 주세요.');
       return;
     }
     perform(async () => {
-      const imageKey = !preview && values.image ? (await call('uploadCatalogImage', values.image)).key : undefined;
       const record = preview
         ? { ...values, id: artwork?.id ?? crypto.randomUUID(), updated: updated() }
-        : await call('saveArtwork', { ...values, imageKey, id: artwork?.id });
+        : await saveWithImage(values.image, (imageKey) =>
+          call('saveArtwork', { ...values, imageKey, id: artwork?.id }));
       setArtworks((current) => mergeRecord(current, record));
+      if (!preview && values.image) onPersisted();
       navigate(adminUrl('artwork-edit', { id: record.id }));
       if (!extract) return;
 
@@ -849,7 +954,7 @@ function Workspace({ preview = false, call, user, onLogout }) {
       if (!preview) await call('deleteArtwork', id);
       setArtworks((current) => current.filter((item) => item.id !== id));
       updateUnits((current) => current.filter((item) => item.artworkId !== id));
-      navigate(adminUrl('artworks'));
+      navigate(adminUrl('exhibition', { id: artwork.exhibitionId }));
     }, '작품 삭제', 'danger');
   }
 
@@ -875,32 +980,40 @@ function Workspace({ preview = false, call, user, onLogout }) {
     });
   }
 
-  function editUnit(input) {
+  function editUnit(unit, action, edits) {
     perform(async () => {
-      const record = preview ? input : await call(
-        input.status === statuses[1] ? 'reviewUnit' : 'saveUnit', input,
-      );
+      const input = { ...unit, ...edits, isRequired: edits?.isRequired };
+      const record = preview ? {
+        ...unit, ...edits, isRequired: edits?.isRequired ?? unit.isRequired,
+        status: action === 'publish' ? statuses[2] : action === 'save'
+          ? ((unit.content !== input.content || unit.category !== input.category) ? statuses[0] : unit.status) : statuses[1],
+      } : action === 'save' ? await call('saveUnit', input)
+        : action === 'review' && !edits ? await call('reviewUnit', unit)
+          : await call('reviewWorkspaceUnit', unit, action, edits);
       updateUnits((current) => mergeRecord(current, record));
     });
   }
 
-  async function reviewSelectedUnits(selectedIds) {
+  async function reviewSelectedUnits(selectedIds, action) {
     if (saving.current) return;
     const selected = new Set(selectedIds);
-    const targets = currentReviewUnits.filter((unit) => unit.status === statuses[0] && selected.has(unit.id));
+    const targets = currentReviewUnits.filter((unit) => selected.has(unit.id) &&
+      (action === 'review' ? unit.status === statuses[0] : unit.status !== statuses[2]));
     if (!targets.length) return;
 
     saving.current = true;
     setBusy(true);
     const records = [];
+    const failed = [];
     let refreshFailed = false;
     try {
       for (const unit of targets) {
         try {
-          const record = preview ? { ...unit, status: statuses[1] } : await call('reviewUnit', unit);
+          const record = preview ? { ...unit, status: statuses[action === 'publish' ? 2 : 1] }
+            : action === 'review' ? await call('reviewUnit', unit) : await call('reviewWorkspaceUnit', unit, 'publish');
           records.push(record);
-        } catch {
-          // Continue processing the other selected Units after a conflict or request failure.
+        } catch (failure) {
+          failed.push(unit.label + ' · ' + errorMessage(failure));
         }
       }
       updateUnits((current) => records.reduce(mergeRecord, current));
@@ -913,7 +1026,7 @@ function Workspace({ preview = false, call, user, onLogout }) {
           refreshFailed = true;
         }
       }
-      return { reviewed: records.length, failed: targets.length - records.length, refreshFailed };
+      return { action, reviewed: records.length, failed, refreshFailed };
     } finally {
       saving.current = false;
       setBusy(false);
@@ -932,7 +1045,7 @@ function Workspace({ preview = false, call, user, onLogout }) {
   function publishUnits() {
     confirm('Unit 게시 확인', '이 작품의 검수 완료 Unit을 게시할까요?', async () => {
       const records = preview
-        ? units.filter((item) => item.artworkId === id && item.status === statuses[1]).map((item) => ({ ...item, status: statuses[2] }))
+        ? currentReviewUnits.filter((item) => item.status === statuses[1]).map((item) => ({ ...item, status: statuses[2] }))
         : await call('publishUnits', id);
       updateUnits((current) => records.reduce(mergeRecord, current));
     }, '게시');
@@ -959,26 +1072,28 @@ function Workspace({ preview = false, call, user, onLogout }) {
     onEdit={() => open({ kind: 'exhibition', record: exhibition })}
     onDelete={deleteExhibition} onPublish={setVisibility} />;
   else if (view === 'artwork-edit' && artwork && showFollowups) content = <>
-    <Heading title={artwork.name}><Button tone="secondary" to={adminUrl('artwork-edit', { id })}>← 작품 정보</Button></Heading>
     {preview ? <Notice>후속 질문을 관리하려면 실제 관리자 화면에서 로그인하세요.</Notice>
       : <FollowupQuestions key={id} artworkId={id} call={call} Modal={Modal} />}
   </>;
   else if (view === 'artwork-new' || (view === 'artwork-edit' && artwork)) content = <>
-    {view === 'artwork-edit' && <div className="admin-actions">
-      <Button tone="secondary" to={adminUrl('artwork-edit', { id, panel: 'followups' })}>Follow-up Questions</Button>
-    </div>}
     <ArtworkForm
     key={view === 'artwork-edit' ? artwork.id : params.get('exhibition') ?? view} record={view === 'artwork-edit' ? artwork : undefined}
     exhibition={params.get('exhibition')} exhibitions={exhibitions} preview={preview}
     onSave={saveArtwork} onDelete={deleteArtwork}
-    extracting={extracting} extractionFailed={Boolean(artwork && artwork.id === extractionFailedId)} />
+    busy={busy} imageStatus={imageStatus} extracting={extracting}
+    extractionFailed={Boolean(artwork && artwork.id === extractionFailedId)} />
   </>;
-  else if (view === 'unit-review' && artwork) content = <ReviewPage key={id} {...{ artwork, artworks }}
+  else if (view === 'unit-review' && artwork) content = <ReviewPage key={id} artwork={artwork}
     {...(!preview && { call, onLoad: setReviewUnits })}
     units={currentReviewUnits}
     onAdd={() => open({ kind: 'unit', artworkId: id })}
     onSave={editUnit}
     onReviewSelected={reviewSelectedUnits}
+    onExtract={preview ? undefined : () => confirm('Unit 다시 추출', '현재 원본 Description에서 Unit을 추출할까요?', async () => {
+      await call('extractUnits', id);
+      const rows = await call('listUnits', { artworkId: id });
+      updateUnits((current) => [...current.filter((unit) => unit.artworkId !== id), ...rows]);
+    }, 'Unit 추출')}
     onDelete={(target) => confirm('Content Unit 삭제 확인', '선택한 Unit을 삭제할까요?', async () => {
       if (!preview) await call('deleteUnit', target.id);
       updateUnits((current) => current.filter((unit) => unit.id !== target.id));
@@ -1013,7 +1128,13 @@ function Workspace({ preview = false, call, user, onLogout }) {
           <strong>{screens[section]?.[0] ?? 'Dashboard'}</strong>
         </div>
         {preview && <span>로컬 미리보기 · 새로고침하면 입력 내용이 초기화됩니다</span>}</header>
-      <main className="admin-page">{error && !modal && <Notice error>{error}</Notice>}{content}</main>
+      <main className="admin-page">
+        {error && !modal && <Notice error>{error}</Notice>}
+        {imageNotice && <p className="admin-notice" role="status">{imageNotice}</p>}
+        {artwork && ['artwork-edit', 'unit-review'].includes(view) &&
+          <ArtworkHeading artwork={artwork} exhibition={artworkExhibition} active={artworkTab} />}
+        {content}
+      </main>
     </div>
     {menuOpen && <Modal title="관리자 메뉴" compact onClose={() => setMenuOpen(false)}>
       <div className="admin-menu-links">{navigation(() => setMenuOpen(false))}
@@ -1022,7 +1143,7 @@ function Workspace({ preview = false, call, user, onLogout }) {
       </div>
     </Modal>}
     {modal?.kind === 'exhibition' && <ExhibitionForm record={modal.record} onSave={saveExhibition} onClose={close}
-      busy={busy} error={error} />}
+      busy={busy} error={error} imageStatus={imageStatus} />}
     {modal?.kind === 'unit' && <UnitForm onSave={saveUnit} onClose={close} busy={busy} error={error} />}
     {(modal?.kind === 'confirm' || modal?.kind === 'notice') && <Modal title={modal.title} onClose={close}>
       <p className="admin-muted">{modal.message}</p>

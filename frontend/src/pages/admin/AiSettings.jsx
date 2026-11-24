@@ -9,6 +9,26 @@ const showVersion = (version) => version == null ? '미저장 초안' : 'v' + ve
 const describeRun = (run) => new Date(run.created_at).toLocaleString('ko-KR')
   + ' · ' + showVersion(run.extraction_prompt_version) + ' / ' + showVersion(run.classification_prompt_version);
 
+function MissingPrompt({ title, versions, busy, onActivate }) {
+  const [selection, setSelection] = useState('');
+  return <section className="admin-card admin-stack">
+    <div className="admin-section-heading"><h2>{title}</h2><span className="admin-badge pending">활성 버전 없음</span></div>
+    {versions.length ? <>
+      <label className="admin-field"><span>활성화할 기존 버전</span>
+        <select value={selection} onChange={(event) => setSelection(event.target.value)} disabled={busy}>
+          <option value="">버전 선택</option>
+          {versions.map(({ version }) => <option key={version} value={version}>v{version}</option>)}
+        </select>
+      </label>
+      <button type="button" className="admin-button" disabled={busy || !selection}
+        onClick={() => onActivate(Number(selection))}>선택한 버전 활성화</button>
+    </> : <>
+      <p>저장된 버전이 없습니다. 이 프로젝트의 초기 프롬프트를 v1으로 설정할 수 있습니다.</p>
+      <button type="button" className="admin-button" disabled={busy} onClick={() => onActivate(null)}>프로젝트 기본 프롬프트 설정</button>
+    </>}
+  </section>;
+}
+
 function PromptEditor({ kind, title, active, versions, draft, busy, onDraft, onSave, onRestore }) {
   const [selected, setSelected] = useState('');
   const historical = versions.find((version) => String(version.version) === selected);
@@ -217,6 +237,16 @@ export default function AiSettings({ call, artworks }) {
     });
   }
 
+  function activatePrompt(kind, version) {
+    perform('프롬프트 활성화 중…', async () => {
+      const saved = await call('activateAiPrompt', kind, version);
+      const next = { version: saved.version, body: saved.body.trim() };
+      setActive((current) => ({ ...current, [kind]: next }));
+      updateDraft(kind, next);
+      if (version === null) setVersions((current) => ({ ...current, [kind]: [next] }));
+    });
+  }
+
   function runTest(event) {
     event.preventDefault();
     perform('추출 및 분류 테스트 중…', async () => {
@@ -243,11 +273,13 @@ export default function AiSettings({ call, artworks }) {
     }}>다시 불러오기</button> : <p role="status">AI 설정을 불러오는 중입니다…</p> : <>
       {busy && <p className="admin-notice" role="status">{busy}</p>}
       <div className="admin-form-grid admin-ai-prompts">
-        {promptKinds.filter(([kind]) => active[kind]).map(([kind, title]) => <PromptEditor key={kind} {...{ kind, title }}
+        {promptKinds.filter(([kind]) => kind !== 'followup' || active[kind]).map(([kind, title]) => active[kind] ? <PromptEditor key={kind} {...{ kind, title }}
           active={active[kind]} versions={versions[kind]} draft={drafts[kind]} busy={Boolean(busy)}
           onDraft={updateDraft}
           onSave={() => updatePrompt(kind, { body: drafts[kind].body }, drafts[kind].body.trim())}
-          onRestore={(_, version) => setRestore({ kind, version })} />)}
+          onRestore={(_, version) => setRestore({ kind, version })} />
+          : <MissingPrompt key={kind} title={title} versions={versions[kind]} busy={Boolean(busy)}
+            onActivate={(version) => activatePrompt(kind, version)} />)}
       </div>
       {drafts.followup ? <FollowupPromptTest call={call} artworks={artworks} draft={drafts.followup} />
         : <p className="admin-notice">후속 질문 설정을 사용하려면 Supabase에 10_followup_questions.sql을 적용해 주세요.</p>}
@@ -278,7 +310,7 @@ export default function AiSettings({ call, artworks }) {
             onChange={(event) => setDescription(event.target.value)} disabled={Boolean(busy)} />
         </label>
         <div className="admin-actions"><button className="admin-button" type="submit"
-          disabled={Boolean(busy) || !description.trim() || !drafts.extraction.body.trim() || !drafts.classification.body.trim()}>테스트 실행</button></div>
+          disabled={Boolean(busy) || !description.trim() || !drafts.extraction?.body.trim() || !drafts.classification?.body.trim()}>테스트 실행</button></div>
       </form>
       <section className="admin-card admin-stack">
         <h2>테스트 결과 비교</h2>

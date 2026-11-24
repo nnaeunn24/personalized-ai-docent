@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { generateDocent, readSuggestedQuestions, readVisitorCatalog, visitorUrl } from './visitor/visitorApi';
 import { rankSuggestedQuestions } from './visitor/followupQuestions';
@@ -42,36 +42,124 @@ function Poster({ className = '', imageUrl, children }) {
   </div>;
 }
 
+function centerPoster(track, card, behavior = 'instant') {
+  track.scrollTo({ left: card.offsetLeft - (track.clientWidth - card.offsetWidth) / 2, behavior });
+}
+
 function ExhibitionHome({ exhibitions }) {
   const [selection, setSelection] = useState(null);
-  const selectedIndex = exhibitions.findIndex((item) => item.id === selection);
-  const index = selectedIndex < 0 ? 0 : selectedIndex;
+  const [descriptions, setDescriptions] = useState({});
+  const drag = useRef(null);
+  const carousel = useRef(null);
+  const navigate = useNavigate();
+  const index = Math.max(0, exhibitions.findIndex((item) => item.id === selection));
   const exhibition = exhibitions[index];
-  if (!exhibition) return <><Header /><p className="visitor-message">공개된 전시가 없습니다.</p></>;
-
+  const venue = exhibition && exhibitionVenue(exhibition);
+  const exhibitionId = exhibition?.id;
+  const description = exhibition?.description ?? descriptions[exhibitionId];
   const multiple = exhibitions.length > 1;
-  const previous = exhibitions[(index + exhibitions.length - 1) % exhibitions.length];
-  const next = exhibitions[(index + 1) % exhibitions.length];
-  const poster = exhibitionImage(exhibition);
-  const venue = exhibitionVenue(exhibition);
+  const slides = multiple
+    ? [...exhibitions.slice(-2), ...exhibitions, ...exhibitions.slice(0, 2)]
+    : exhibitions.length ? exhibitions : [null];
+  const firstId = exhibitions[0]?.id;
+
+  useLayoutEffect(() => {
+    const track = carousel.current;
+    centerPoster(track, track.children[multiple ? 2 : 0]);
+  }, [firstId, multiple]);
+
+  useEffect(() => {
+    if (!exhibitionId || description !== undefined) return;
+    const controller = new AbortController();
+    readVisitorCatalog(exhibitionId, null, controller.signal).then((detail) => {
+      if (!controller.signal.aborted) {
+        setDescriptions((current) => ({ ...current, [exhibitionId]: detail?.description ?? '' }));
+      }
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [description, exhibitionId]);
+
+  function centeredCard(track) {
+    const midpoint = track.scrollLeft + track.clientWidth / 2;
+    const distance = (card) => Math.abs(card.offsetLeft + card.offsetWidth / 2 - midpoint);
+    return Array.from(track.children).reduce((best, card) =>
+      distance(card) < distance(best) ? card : best);
+  }
+
+  function endDrag(event) {
+    const track = event.currentTarget;
+    if (drag.current?.moved) {
+      const closest = centeredCard(track);
+      delete track.dataset.dragging;
+      centerPoster(track, closest, scrollBehavior());
+    }
+    drag.current = null;
+  }
+
+  function scrollBehavior() {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
+  }
+
   return <>
     <Header />
     <section className="visitor-home" aria-label="공개 전시 목록">
-      <div className="visitor-carousel">
-        {multiple && <button className="visitor-side-poster visitor-previous" type="button"
-          aria-label={'이전 전시: ' + previous.name} onClick={() => setSelection(previous.id)}>
-          <Poster imageUrl={exhibitionImage(previous)}>{previous.name}</Poster>
-        </button>}
-        <Poster className="visitor-home-poster" imageUrl={poster}>{exhibition.name}</Poster>
-        {multiple && <button className="visitor-side-poster visitor-next" type="button"
-          aria-label={'다음 전시: ' + next.name} onClick={() => setSelection(next.id)}>
-          <Poster imageUrl={exhibitionImage(next)}>{next.name}</Poster>
-        </button>}
-        {poster && <div className="visitor-poster-pocket" aria-hidden="true" />}
+      <div className="visitor-carousel" ref={carousel} onScroll={(event) =>
+        setSelection(centeredCard(event.currentTarget).dataset.exhibitionId ?? null)}
+        onScrollEnd={(event) => {
+          if (!multiple || drag.current?.moved) return;
+          const track = event.currentTarget;
+          const card = centeredCard(track);
+          if (card.dataset.clone) {
+            const original = Array.from(track.children).find((item) =>
+              !item.dataset.clone && item.dataset.exhibitionId === card.dataset.exhibitionId);
+            if (original) centerPoster(track, original);
+          }
+        }}
+        onPointerDown={(event) => {
+          if (exhibitions.length < 2 || event.pointerType !== 'mouse' || event.button !== 0) return;
+          drag.current = { x: event.clientX, left: event.currentTarget.scrollLeft, moved: false };
+        }}
+        onPointerMove={(event) => {
+          if (!drag.current) return;
+          const track = event.currentTarget;
+          const delta = event.clientX - drag.current.x;
+          if (!drag.current.moved && Math.abs(delta) < 5) return;
+          if (!drag.current.moved) {
+            drag.current.moved = true;
+            track.dataset.dragging = 'true';
+            track.setPointerCapture(event.pointerId);
+          }
+          track.scrollLeft = drag.current.left - delta;
+        }}
+        onPointerUp={endDrag} onPointerCancel={endDrag} onLostPointerCapture={endDrag}
+        onPointerLeave={() => { if (!drag.current?.moved) drag.current = null; }}>
+        {slides.map((item, position) => {
+          const clone = multiple && (position < 2 || position >= exhibitions.length + 2);
+          const active = item?.id === exhibition?.id;
+          return <button className="visitor-poster-slide" key={(item?.id ?? 'empty') + (clone ? '-' + position : '')} type="button"
+            data-exhibition-id={item?.id} aria-label={item?.name ?? '전시 찾기'}
+            data-clone={clone || undefined} data-active={active}
+            aria-current={!clone && active ? 'true' : undefined} aria-hidden={clone || undefined}
+            tabIndex={clone ? -1 : undefined}
+            onMouseDown={clone ? (event) => event.preventDefault() : undefined}
+            onClick={(event) => {
+              if (item) centerPoster(event.currentTarget.parentElement, event.currentTarget, scrollBehavior());
+              else navigate(searchUrl);
+            }}>
+            <div className="visitor-poster-visual">
+              <Poster className="visitor-home-poster" imageUrl={item && exhibitionImage(item)}>+</Poster>
+              <div className="visitor-poster-pocket" aria-hidden="true" />
+            </div>
+          </button>;
+        })}
       </div>
-      <h1>{exhibition.name}</h1>
+      <h1>{exhibition?.name ?? '전시를 찾아보세요'}</h1>
       {venue && <p className="visitor-muted visitor-home-venue">{venue}</p>}
-      <Link className="visitor-button" to={visitorUrl(exhibition.id)}>관람 시작하기</Link>
+      {description && <p className="visitor-muted visitor-home-venue">{description}</p>}
+      {!exhibition && <p className="visitor-muted visitor-home-venue">전시를 선택하면 이곳에 포스터가 놓입니다.</p>}
+      <Link className="visitor-button" to={exhibition ? visitorUrl(exhibition.id) : searchUrl}>
+        {exhibition ? '관람 시작하기' : '전시 찾기'}
+      </Link>
     </section>
   </>;
 }

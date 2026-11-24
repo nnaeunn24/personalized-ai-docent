@@ -130,10 +130,11 @@ export default function VisitorChat({ data, profile, nextArtwork, suggestedQuest
         {turns.map(({ question, answer }, index) => <div className="visitor-chat-turn" key={index}>
           <p className="visitor-chat-bubble visitor-chat-question" aria-label={'관람객: ' + question}>{question}</p>
           {answer && <p className="visitor-chat-bubble visitor-chat-answer" aria-label={'AI 도슨트: ' + answer}>{answer}</p>}
+          {!answer && pending && index === turns.length - 1 &&
+            <div className="visitor-chat-bubble visitor-chat-answer visitor-chat-pending" role="status" aria-label="답변을 만드는 중이에요">
+              <img className="visitor-chat-loading" src={chatLoading} alt="" />
+            </div>}
         </div>)}
-        {pending && <div className="visitor-chat-bubble visitor-chat-answer" role="status" aria-label="답변을 만드는 중이에요">
-          <img className="visitor-chat-loading" src={chatLoading} alt="" />
-        </div>}
         {!pending && failedQuestion && <div className="visitor-chat-error">
           <p role="alert">{error || '이 질문의 답변을 받지 못했어요.'}</p>
           <button className="visitor-button" type="button" onClick={() => send(failedQuestion, true)}>다시 시도</button>

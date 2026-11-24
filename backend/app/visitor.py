@@ -25,6 +25,7 @@ class ExhibitionSummary(BaseModel):
     id: UUID
     name: str
     code: str
+    description: str | None = None
     image_url: str | None = None
 
 
@@ -267,6 +268,7 @@ def visitor_router(settings):
                     or len(set(used_supporting)) != len(used_supporting)
                     or not set(used_core).issubset(unit.id for unit in selection.core)
                     or not set(used_supporting).issubset(unit.id for unit in selection.supporting)):
+                    logger.warning("Docent validation failed: category=evidence_id_mismatch schema=DocentText")
                     raise HTTPException(502, "도슨트 응답의 근거 ID가 제공된 Unit과 일치하지 않습니다.")
             except HTTPException as error:
                 if error.status_code == 502:

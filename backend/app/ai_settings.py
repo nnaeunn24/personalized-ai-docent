@@ -5,6 +5,11 @@ from pydantic import Field, StringConstraints, model_validator
 from .schemas import RequestBody
 
 PromptKind = Literal["extraction", "classification", "followup"]
+ExtractionPromptKind = Literal["extraction", "classification"]
+EXTRACTION_PROMPT_TITLES = {
+    "extraction": "Unit Extraction Prompt",
+    "classification": "WHAT Classification Prompt",
+}
 PromptBody = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=12000)]
 PromptVersion = Annotated[int, Field(ge=1)]
 
@@ -19,6 +24,10 @@ class PromptUpdate(RequestBody):
         if (self.body is None) == (self.restore_version is None):
             raise ValueError("Provide one prompt body or restore version.")
         return self
+
+
+class PromptActivation(RequestBody):
+    version: PromptVersion | None = None
 
 
 class PromptTest(RequestBody):

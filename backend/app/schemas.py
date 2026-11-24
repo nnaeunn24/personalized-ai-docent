@@ -8,7 +8,7 @@ ShortText = Annotated[str, StringConstraints(max_length=200)]
 Category = Literal["VISUAL", "MEANING", "TECHNIQUE", "BACKGROUND"]
 UnitStatus = Literal["pending", "reviewed", "published"]
 CatalogImageKey = Annotated[str, StringConstraints(
-    pattern=r"^docent-catalog/[a-f0-9-]{36}/[a-f0-9]{64}\.(jpg|png)$"
+    pattern=r"^docent-catalog/[a-f0-9-]{36}/[a-f0-9]{64}\.(jpg|png|webp)$"
 )]
 
 
@@ -74,10 +74,14 @@ class Artwork(RequestBody):
 
 
 class Unit(RequestBody):
-    # Admin edits only supply content and category; provenance is managed by the database.
     content: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20000)]
     category: Category
+    is_required: bool | None = None
 
 
 class Review(RequestBody):
     updated_at: AwareDatetime
+
+
+class WorkspaceUnitReview(Review):
+    edits: Unit | None = None
