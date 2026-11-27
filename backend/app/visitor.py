@@ -7,11 +7,11 @@ from pydantic import BaseModel, StringConstraints
 
 from .artwork_questions import ArtworkAnswer, ArtworkQuestion, answer_artwork_question
 from .docent import (
-    DOCENT_PROMPT, EVIDENCE_PROMPT, HOW_FOCUS, WHY_GUIDANCE, DocentText, EvidencePlan, Personalization,
-    SupportingLink, apply_evidence_plan, select_units, sentence_count,
+    DOCENT_DELIVERY, DOCENT_EXPERIENCE, EVIDENCE_PROMPT, VISITOR_DOCENT_PROMPT,
+    DocentText, EvidencePlan, Personalization, SupportingLink, apply_evidence_plan, select_units, sentence_count,
 )
 from .docent_strategy import (
-    CONTENT_RULES, STRATEGY_GENERATION_RULES, DocentStrategyAssessment,
+    DOCENT_FLOW_RULES, DocentStrategyAssessment,
     assess_docent_strategy, plan_docent_strategy,
 )
 from .gemini_units import Gemini, logger
@@ -92,6 +92,7 @@ class DocentDebug(BaseModel):
     evidence_insufficient: bool
     selection_strategy: str
     supporting_links: list[SupportingLink]
+    selection_details: dict | None = None
     strategy_details: StrategyDebug | None = None
 
 
@@ -192,6 +193,7 @@ def visitor_router(settings):
         selection = select_units(
             data.units, profile.what, config.visitor_docent_unit_limit, artwork_metadata,
             artwork_needs_review=artwork_id in config.visitor_docent_review_artwork_ids,
+            why=profile.why, how=profile.how,
         )
         text = model = None
         used_core = []
@@ -203,12 +205,16 @@ def visitor_router(settings):
         if selection.core or selection.supporting:
             gemini = Gemini(request.app.state.http, config.gemini_api_key.get_secret_value())
             model_name = config.gemini_docent_model or config.gemini_model
-            candidates = [unit for unit in data.units if selection.excluded.get(unit.id) != "duplicate"]
+            candidates = sorted(
+                (unit for unit in data.units if selection.excluded.get(unit.id) != "duplicate"),
+                key=lambda unit: unit.id,
+            )
             if selection.core and len(candidates) > 1:
                 candidate_refs = dict(enumerate(candidates, start=1))
                 plan_input = {
                     "artwork_name": data.name,
                     "WHAT": profile.what,
+                    "WHY": profile.why,
                     "HOW": profile.how,
                     "unit_limit": config.visitor_docent_unit_limit,
                     "core_candidates": [],
@@ -222,9 +228,11 @@ def visitor_router(settings):
                     plan, _ = await gemini.generate(model_name, EVIDENCE_PROMPT, plan_input, EvidencePlan)
                     semantic_selection = apply_evidence_plan(
                         candidate_refs, profile.what, config.visitor_docent_unit_limit, selection, plan,
+                        artwork_metadata, why=profile.why, how=profile.how,
                     )
                 except HTTPException as error:
                     logger.warning("Docent evidence planning unavailable: status=%s", error.status_code)
+                    selection.trace["plan_status"] = "provider_or_schema_error"
                 if semantic_selection is not None:
                     selection = semantic_selection
                 else:
@@ -233,32 +241,32 @@ def visitor_router(settings):
                 "artwork": artwork_metadata,
                 "core_units": [unit.model_dump(mode="json") for unit in selection.core],
                 "supporting_units": [unit.model_dump(mode="json") for unit in selection.supporting],
-                "WHY": WHY_GUIDANCE[profile.why],
+                "WHY": profile.why,
                 "WHAT": profile.what,
                 "HOW": profile.how,
+                "WHY_GUIDANCE": DOCENT_EXPERIENCE[profile.why],
+                "HOW_GUIDANCE": DOCENT_DELIVERY[profile.how],
             }
             if selection.links:
                 input_data["supporting_links"] = [link.model_dump(mode="json") for link in selection.links]
-            if profile.context and (not config.visitor_docent_strategy_enabled or selection.core):
-                input_data["CONTEXT"] = profile.context
             try:
-                instruction = f"{DOCENT_PROMPT}\n\n{HOW_FOCUS[profile.how]}"
+                instruction = VISITOR_DOCENT_PROMPT
                 if config.visitor_docent_strategy_enabled and selection.core:
                     try:
-                        strategy_fields = await plan_docent_strategy(gemini, model_name, input_data)
+                        strategy_fields = await plan_docent_strategy(
+                            gemini, model_name, {**input_data, "CONTEXT": profile.context or None},
+                        )
                     except (HTTPException, ValueError) as error:
                         logger.warning("Docent strategy planning failed: %s", type(error).__name__)
                         strategy_debug = StrategyDebug(status="planning_fallback")
                     else:
-                        instruction = f"{instruction}\n\n{STRATEGY_GENERATION_RULES}\n\n{CONTENT_RULES}"
+                        instruction = f"{instruction}\n\n{DOCENT_FLOW_RULES}"
                         input_data.update(strategy_fields)
                         strategy_debug = StrategyDebug(
                             status="applied", required_content=strategy_fields["required_content"],
                             explanation_strategy=strategy_fields["explanation_strategy"],
                             evidence_refs=strategy_fields["evidence_refs"], assessment=None,
                         )
-                    # The planner alone receives the raw visitor context on the new path.
-                    input_data.pop("CONTEXT", None)
                 result, model = await gemini.generate(model_name, instruction, input_data, DocentText)
                 used_core = result.used_core_unit_ids
                 used_supporting = result.used_supporting_unit_ids
@@ -300,6 +308,7 @@ def visitor_router(settings):
                 evidence_insufficient=evidence_insufficient,
                 selection_strategy=selection.strategy,
                 supporting_links=selection.links,
+                selection_details=selection.trace or None,
             )
             if strategy_debug is not None:
                 debug.strategy_details = strategy_debug
