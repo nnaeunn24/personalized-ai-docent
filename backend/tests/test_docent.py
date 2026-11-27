@@ -7,7 +7,13 @@ import httpx
 from fastapi import FastAPI
 from pydantic import SecretStr
 
-from app.docent import DEFAULT_DOCENT_REVIEW_ARTWORK_IDS, EvidencePlan, apply_evidence_plan, select_units
+from app.docent import (
+    DEFAULT_DOCENT_REVIEW_ARTWORK_IDS,
+    EvidencePlan,
+    apply_evidence_plan,
+    evidence_terms,
+    select_units,
+)
 from app.visitor import PublishedUnit, visitor_router
 
 
@@ -41,6 +47,41 @@ class SelectionTest(unittest.TestCase):
         result = select_units(units, "VISUAL", 6, ARTWORK)
         self.assertEqual(result.core, [])
         self.assertEqual(result.supporting, units[:2])
+
+    def test_unfiltered_function_word_overlap_can_select_support(self):
+        core = unit(1, "MEANING", "The scene is in focus.")
+        support = unit(2, "VISUAL", "A visitor is in line.")
+        result = select_units([core, support], "MEANING", 6, ARTWORK)
+        self.assertEqual(result.core, [core])
+        self.assertEqual(result.supporting, [support])
+
+    def test_unfiltered_person_name_overlap_can_select_support(self):
+        core = unit(1, "MEANING", "Mary Reynolds created portrait sketches.")
+        support = unit(2, "BACKGROUND", "Mary Reynolds catalogued archival letters.")
+        result = select_units([core, support], "MEANING", 6, ARTWORK)
+        self.assertEqual(result.core, [core])
+        self.assertEqual(result.supporting, [support])
+
+    def test_meaningful_overlap_selects_support_even_with_person_name(self):
+        core = unit(1, "MEANING", "The gloves open the book.")
+        support = unit(2, "VISUAL", "Mary Reynolds positioned the gloves to open a book.")
+        result = select_units([core, support], "MEANING", 6, ARTWORK)
+        self.assertEqual(result.core, [core])
+        self.assertEqual(result.supporting, [support])
+
+    def test_insufficient_relevance_leaves_supporting_slots_empty(self):
+        core = unit(1, "MEANING", "Painted figure rests beside a table.")
+        candidates = [
+            unit(2, "VISUAL", "Museum visitors enter through the archway."),
+            unit(3, "BACKGROUND", "Clouds drift above distant hills."),
+        ]
+        result = select_units([core, *candidates], "MEANING", 6, ARTWORK)
+        self.assertEqual(result.core, [core])
+        self.assertEqual(result.supporting, [])
+        self.assertEqual(result.excluded, {candidate.id: "low_relevance" for candidate in candidates})
+
+    def test_negation_and_uncertainty_terms_are_preserved(self):
+        self.assertEqual(evidence_terms("not may"), {"not", "may"})
 
     def test_plan_keeps_anchors_and_drops_excess_or_duplicate_links(self):
         units = [
