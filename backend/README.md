@@ -109,4 +109,81 @@ Supabase SQL Editor에서 기존 03과 04가 적용된 상태로 [05_admin_ai_se
 
 비교 실험 JSON의 문장별 근거를 점검하려면 `backend`에서 `python -m app.evaluate_docent ../docent-stability-comparison.json ../docent-sentence-audit.json`을 실행합니다. 이 명령은 기록된 답변과 선택 Unit을 동일 Gemini 모델에 보내 의미를 대조하고, 부분 근거·근거 없음·감상 안내와 미사용 Core를 구분합니다. 사용량 제한 등으로 일부 평가가 실패하면 같은 명령에 `--resume`을 붙여 입력이 동일한 성공 결과를 재사용할 수 있습니다. 모델의 평가는 별도 검토 자료이며 관람객 요청에서는 실행되지 않습니다.
 
+## 저장된 도슨트 결과의 오프라인 평가
+
+팀원이 이미 확보한 결과를 `docent-evaluation/v1` JSONL 형식으로 정리하면 생성 API를 다시 호출하지 않고 Core Coverage와 개인화 조건 간 표면 차이를 평가할 수 있습니다. JSONL은 한 줄에 생성 결과 하나를 저장합니다. `data_origin`은 `actual` 또는 `mock`으로 구분하며, 실제 여부는 입력 기록에 선언된 값으로 평가기가 독립 검증하지 않습니다. 확인할 수 없는 모델·프로필·Unit ID는 `null` 또는 `"unknown"`으로 남길 수 있습니다. 실제로 만든 결과가 없는 상태에서 테스트용 문장을 `actual`로 표시하지 마세요.
+
+```json
+{
+  "schema_version": "docent-evaluation/v1",
+  "record_id": "run-241624-why-discover",
+  "data_origin": "actual",
+  "comparison": {
+    "pair_id": "241624-why-relax-01",
+    "role": "baseline",
+    "changed_factor": "why"
+  },
+  "artwork": {"id": "241624", "name": "Les Mains libres"},
+  "profile": {"why": "discover", "what": "MEANING", "how": "Basic"},
+  "selection": {
+    "strategy": "unknown",
+    "selected_core_unit_ids": ["241624_CU06"],
+    "selected_supporting_unit_ids": ["241624_CU05"],
+    "core_units": [
+      {"id": "241624_CU06", "category": "MEANING", "content": "선택 당시 Core 원문"}
+    ],
+    "supporting_units": [
+      {"id": "241624_CU05", "category": "VISUAL", "content": "선택 당시 Supporting 원문"}
+    ]
+  },
+  "generation": {
+    "status": "completed",
+    "text": "기존에 저장된 실제 도슨트 설명문",
+    "model": null,
+    "requested_model": null,
+    "used_core_unit_ids": ["241624_CU06"],
+    "used_supporting_unit_ids": ["241624_CU05"],
+    "evidence_insufficient": null
+  },
+  "provenance": {"captured_from": "existing browser response", "captured_at": null}
+}
+```
+
+WHAT별 필수 Core 검수 CSV와 Supporting 쌍 검수 CSV는 작품별로 반복 지정합니다. 출력 파일이 이미 있으면 덮어쓰지 않습니다.
+
+```powershell
+Set-Location backend
+.\.venv\Scripts\python.exe -m app.evaluate_saved_docent_results `
+  ..\docent-results.jsonl ..\docent-evaluation-report.json `
+  --core-review ..\docent-241624-core-coverage-review_1차검수.csv `
+  --supporting-review ..\docent-241624-core-supporting-review_1차검수.csv
+```
+
+이 평가는 저장된 선택 ID와 생성기가 보고한 사용 ID 각각의 REQUIRED Core Coverage, 선택·보고 사용 Unit ID의 일관성, 사람이 검수한 Core–Supporting 쌍 라벨을 정리합니다. `comparison.pair_id`를 공유하는 `baseline`·`variant` 두 레코드는 작품과 WHY·WHAT·HOW 중 변경 요소 하나가 일치할 때만 비교합니다. 본문 차이는 문자열 유사도·토큰 겹침 등 표면 지표로만 보고하며 의도된 개인화나 의미 품질을 판정하지 않습니다. Supporting 검수 라벨은 후보 쌍의 관련성이지 본문이 실제 근거를 사용했다는 증거가 아닙니다. Groundedness와 문장별 사실 근거 평가는 이 오프라인 명령에서 수행하지 않습니다. 기존 `app.evaluate_docent` 문장 감사는 Gemini 호출이므로 이 제한된 오프라인 평가와 별개입니다.
+
+## 오프라인 평가 입력과 재현
+
+평가 스크립트와 테스트는 외부 API를 호출하지 않습니다. `app.evaluate_saved_docent_results`는 `docent-evaluation/v1` JSONL을 입력으로 사용하며, 위 예시처럼 한 줄에 완전한 JSON 객체 하나를 둡니다. `data_origin`은 `actual` 또는 `mock`이고, 확인되지 않은 선택 ID·모델·프로필 값은 `null` 또는 `"unknown"`으로 기록합니다. 평가기는 `actual` 표기를 독립적으로 증명하지 않으므로 결과 출처를 확인해 입력해야 합니다.
+
+Supporting 검수 CSV는 최소한 `artwork_id`, `core_unit_id`, `supporting_unit_id`, `relevance_label` 열이 필요합니다. 라벨은 `RELEVANT`, `NOT_RELEVANT`, `REVIEW_NEEDED`, `PENDING` 중 하나를 사용합니다. Core Coverage 검수 CSV는 `artwork_id`, `artwork_name`, `what_category`, `core_unit_id`, `core_content`, `essential_label`, `semantic_aspect`, `redundancy_group`, `review_reason`, `review_status` 열이 필요합니다. `essential_label`은 `REQUIRED`, `OPTIONAL`, `REVIEW_NEEDED`, `EXCLUDE`, `PENDING` 중 하나입니다. 평가기에 전달하는 검수 CSV는 생성문 JSONL과 별도 입력이며 자동 생성되지 않습니다.
+
+Core–Supporting 검수 CSV 생성기는 승인된 WHAT 4-class CSV를 읽습니다. 입력에 `artwork_id`, `artwork_title`, `unit_id`, `text`, `gold_category`, `human_approval`, `new_action` 열이 있어야 합니다. 대상 작품의 `APPROVED` 및 `KEEP` 행만 사용하고, 원본 ID·본문을 보존합니다. 결과의 검수 라벨은 `PENDING`이며 기존 출력 파일은 덮어쓰지 않습니다.
+
+```powershell
+Set-Location backend
+.\.venv\Scripts\python.exe -m app.build_docent_selection_review_dataset `
+  --input ..\WHAT_4class_Gold_approved.csv `
+  --artwork-id 244623 `
+  --output ..\docent-244623-core-supporting-review.csv
+```
+
+`app.evaluate_docent_core_coverage.evaluate_core_coverage(review_csv, what_category, selected_core_ids)`는 검수 CSV의 선택 Core ID에 대한 Coverage를 계산하는 라이브러리 함수입니다. Semantic Plan 구조까지 평가할 때는 `evaluate_plan_application`에 Mock 또는 기록된 계획, 후보 참조, fallback 결과를 전달합니다. 이 모듈에는 별도 CLI가 없습니다. 생성된 도슨트 JSONL에 기록된 선택 ID와 검수 라벨을 평가하려면 위의 `app.evaluate_saved_docent_results` 명령을 사용합니다.
+
+로컬 검수 CSV나 생성문 JSONL 없이도 테스트를 실행할 수 있습니다. 테스트는 입력 CSV·JSONL을 임시 디렉터리에 생성하고, 생성/API 경로가 필요한 경우 Fake provider를 사용합니다. 전체 백엔드 테스트 실행에는 `requirements.txt` 설치가 필요하지만 `.env`, Gemini 키, 검수 데이터 파일은 필요하지 않습니다.
+
+```powershell
+Set-Location backend
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
 전시·작품 이미지를 Supabase에서 제공하려면 해당 환경의 공개 이미지 버킷 이름을 `VISITOR_IMAGE_BUCKET`에 설정하고 기존 `cover_object_key`와 `image_object_key`에 버킷 내부 객체 경로를 사용합니다. 일치하는 Figma 예시 전시와 작품은 번들 이미지를 사용할 수 있습니다.
