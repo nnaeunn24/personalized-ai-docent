@@ -8,12 +8,13 @@ from pydantic import BaseModel
 
 from .artwork_questions import ArtworkAnswer, ArtworkQuestion, answer_artwork_question
 from .docent import (
-    DOCENT_PROMPT, EVIDENCE_PROMPT, HOW_FOCUS, WHY_GUIDANCE, DocentText, EvidencePlan, Personalization,
-    SupportingLink, apply_evidence_plan, select_units, sentence_count,
+    DOCENT_PROMPT, EVIDENCE_PROMPT, HOW_FOCUS, SERVICE_DOCENT_RULES, SERVICE_HOW_FOCUS,
+    WHY_PERSONALIZATION_GUIDANCE, DocentText, EvidencePlan, Personalization, SupportingLink,
+    apply_evidence_plan, select_units, sentence_count,
 )
 from .docent_strategy import (
-    CONTENT_RULES, STRATEGY_GENERATION_RULES, DocentStrategyAssessment,
-    assess_docent_strategy, plan_docent_strategy,
+    CONTENT_RULES, SERVICE_CONTENT_RULES, SERVICE_STRATEGY_GENERATION_RULES,
+    STRATEGY_GENERATION_RULES, DocentStrategyAssessment, assess_docent_strategy, plan_docent_strategy,
 )
 from .gemini_units import Gemini, logger
 from .schemas import Category
@@ -213,7 +214,7 @@ def visitor_router(settings):
                 "artwork": artwork_metadata,
                 "core_units": [unit.model_dump(mode="json") for unit in selection.core],
                 "supporting_units": [unit.model_dump(mode="json") for unit in selection.supporting],
-                "WHY": WHY_GUIDANCE[profile.why],
+                "WHY": WHY_PERSONALIZATION_GUIDANCE[profile.why],
                 "WHAT": profile.what,
                 "HOW": profile.how,
             }
@@ -222,7 +223,10 @@ def visitor_router(settings):
             if profile.context and (not config.visitor_docent_strategy_enabled or selection.core):
                 input_data["CONTEXT"] = profile.context
             try:
-                instruction = f"{DOCENT_PROMPT}\n\n{HOW_FOCUS[profile.how]}"
+                instruction = (
+                    f"{DOCENT_PROMPT}\n\n{HOW_FOCUS[profile.how]}\n\n"
+                    f"{SERVICE_DOCENT_RULES}\n\n{SERVICE_HOW_FOCUS[profile.how]}"
+                )
                 if config.visitor_docent_strategy_enabled and selection.core:
                     try:
                         strategy_fields = await plan_docent_strategy(gemini, model_name, input_data)
@@ -230,7 +234,10 @@ def visitor_router(settings):
                         logger.warning("Docent strategy planning failed: %s", type(error).__name__)
                         strategy_debug = StrategyDebug(status="planning_fallback")
                     else:
-                        instruction = f"{instruction}\n\n{STRATEGY_GENERATION_RULES}\n\n{CONTENT_RULES}"
+                        instruction = (
+                            f"{instruction}\n\n{STRATEGY_GENERATION_RULES}\n\n{CONTENT_RULES}\n\n"
+                            f"{SERVICE_STRATEGY_GENERATION_RULES}\n\n{SERVICE_CONTENT_RULES}"
+                        )
                         input_data.update(strategy_fields)
                         strategy_debug = StrategyDebug(
                             status="applied", required_content=strategy_fields["required_content"],
